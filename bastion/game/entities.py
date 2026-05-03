@@ -197,6 +197,9 @@ class Enemy:
         self.burn_spread_timer = 0.0
         self.burn_spread_radius = 0.0
         self.burn_spread_falloff = 0.5
+        self.damage_vulnerability_time = 0.0
+        self.damage_vulnerability_multiplier = 1.0
+        self.damage_vulnerability_source_classes: set[str] = set()
         self.last_hit_by = None
         self.taunt_target = None
         self.taunt_time = 0.0
@@ -256,6 +259,11 @@ class Enemy:
             self.attack_slow_multiplier = 1.0
 
         self.stun_time = max(0.0, self.stun_time - dt)
+        if self.damage_vulnerability_time > 0:
+            self.damage_vulnerability_time -= dt
+        else:
+            self.damage_vulnerability_multiplier = 1.0
+            self.damage_vulnerability_source_classes.clear()
         self.attack_cooldown = max(0.0, self.attack_cooldown - dt * self.attack_slow_multiplier)
         self.taunt_time = max(0.0, self.taunt_time - dt)
         self.swing_time = max(0.0, self.swing_time - dt)
@@ -497,6 +505,19 @@ class Enemy:
         self.burn_can_spread = can_spread and spread_radius > 0
         self.burn_spread_timer = min(self.burn_spread_timer if self.burn_spread_timer > 0 else 0.35, 0.35)
 
+    def apply_damage_vulnerability(self, multiplier: float, duration: float, source_classes: tuple[str, ...] = ("troop", "tower")) -> None:
+        self.damage_vulnerability_multiplier = max(self.damage_vulnerability_multiplier, multiplier)
+        self.damage_vulnerability_time = max(self.damage_vulnerability_time, duration)
+        self.damage_vulnerability_source_classes.update(source_classes)
+
+    def damage_taken_multiplier(self, source) -> float:
+        if self.damage_vulnerability_time <= 0:
+            return 1.0
+        source_class = "tower" if source.__class__.__name__ == "Tower" else str(getattr(source, "target_class", ""))
+        if source_class in self.damage_vulnerability_source_classes:
+            return self.damage_vulnerability_multiplier
+        return 1.0
+
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         if not self.alive:
             return
@@ -513,6 +534,9 @@ class Enemy:
         if self.stun_time > 0:
             pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.035 + self.phase)
             draw_circle_alpha(surface, screen, r + 8 + pulse * 3, config.PALETTE.white, 64, 1)
+        if self.damage_vulnerability_time > 0:
+            draw_circle_alpha(surface, screen, r + 11 * camera.zoom, config.PALETTE.white, 58, 1)
+            draw_line_alpha(surface, screen + pygame.Vector2(-r, -r), screen + pygame.Vector2(r, r), config.PALETTE.white, 72, 1)
 
         if self.shape == "diamond":
             points = [(screen.x, screen.y - r), (screen.x + r, screen.y), (screen.x, screen.y + r), (screen.x - r, screen.y)]
@@ -1009,11 +1033,12 @@ class Projectile:
 
 
 class EnemyProjectile:
-    def __init__(self, pos: pygame.Vector2, target, speed: float, damage: float) -> None:
+    def __init__(self, pos: pygame.Vector2, target, speed: float, damage: float, owner=None) -> None:
         self.pos = pygame.Vector2(pos)
         self.target = target
         self.speed = speed
         self.damage = damage
+        self.owner = owner
         self.destination = pygame.Vector2(target.pos)
         delta = self.destination - self.pos
         if delta.length_squared() == 0:
@@ -1040,7 +1065,7 @@ class EnemyProjectile:
 
         if getattr(self.target, "alive", False) and _segment_distance(previous, self.pos + self.direction * min(step, distance), self.target.pos) <= self.target.radius + 4.0:
             self.pos = pygame.Vector2(self.target.pos)
-            game.damage_friendly(self.target, self.damage, source_pos=pygame.Vector2(self.pos))
+            game.damage_friendly(self.target, self.damage, source_pos=pygame.Vector2(self.pos), source=self.owner)
             game.spawn_burst(self.pos, 6, 38)
             self.alive = False
             return

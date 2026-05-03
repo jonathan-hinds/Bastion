@@ -141,6 +141,7 @@ class GameState:
         self.enemy_projectiles = []
         self.particles: list[Particle] = []
         self.damage_pulses: list[DamagePulse] = []
+        self.ability_zones = []
         self.beams: list[Beam] = []
         self.texts: list[FloatingText] = []
         self.build_mode: str | None = "wall"
@@ -450,6 +451,8 @@ class GameState:
             deposit.update(dt, self)
         self.update_fog(dt)
         self.rebuild_spatial_index()
+        for zone in list(self.ability_zones):
+            zone.update(dt, self)
         for troop in list(self.troops):
             troop.update(dt, self)
         for dropped_item in list(self.dropped_items):
@@ -466,6 +469,7 @@ class GameState:
 
         self.projectiles = [projectile for projectile in self.projectiles if projectile.alive]
         self.enemy_projectiles = [projectile for projectile in self.enemy_projectiles if projectile.alive]
+        self.ability_zones = [zone for zone in self.ability_zones if getattr(zone, "alive", False)]
         self.dropped_items = [dropped_item for dropped_item in self.dropped_items if dropped_item.alive]
         self.enemies = [enemy for enemy in self.enemies if enemy.alive]
         self.troops = [troop for troop in self.troops if troop.alive]
@@ -585,7 +589,7 @@ class GameState:
             if core.alive:
                 yield core
         for troop in self.nearby_troops(pos, radius):
-            if troop.alive:
+            if troop.alive and float(getattr(troop, "stealth_time", 0.0)) <= 0:
                 yield troop
         point = pygame.Vector2(pos)
         for structure in [tower for tower in self.towers if tower.alive] + [building for building in self.buildings if building.alive]:
@@ -1112,11 +1116,18 @@ class GameState:
     ) -> None:
         if not enemy.alive or amount <= 0:
             return
+        if owner is not None and hasattr(owner, "abilities"):
+            amount = owner.abilities.modify_outgoing_damage(enemy, amount, element, self)
         actual_amount = amount * damage_multiplier(enemy, element)
+        if hasattr(enemy, "damage_taken_multiplier"):
+            actual_amount *= enemy.damage_taken_multiplier(owner)
+        if actual_amount <= 0:
+            return
         if (
             owner is not None
             and hasattr(enemy, "aggro")
             and getattr(owner, "alive", True)
+            and float(getattr(owner, "stealth_time", 0.0)) <= 0
             and not self.aggro_suppressed_by_cover_fire(owner)
         ):
             threat = actual_amount * (0.35 if quiet else 1.25)
@@ -2212,6 +2223,7 @@ class GameState:
         amount: float,
         source_pos: pygame.Vector2 | None = None,
         element: str = "physical",
+        source=None,
     ) -> None:
         if not getattr(target, "alive", False):
             return
@@ -2235,13 +2247,53 @@ class GameState:
                 self.show_damage_impact(target.pos, "single", 0.0)
                 if actual_amount <= 0:
                     return
+        actual_amount = self._modify_friendly_incoming_damage(target, actual_amount, source, source_pos, element)
+        if actual_amount <= 0:
+            self.spawn_hit(target.pos, 2)
+            return
+        redirected_target = self._redirect_fatal_friendly_damage(target, actual_amount, source, source_pos, element)
+        if redirected_target is not target:
+            target = redirected_target
+            actual_amount = self._modify_friendly_incoming_damage(target, actual_amount, source, source_pos, element)
+            if actual_amount <= 0:
+                self.spawn_hit(target.pos, 2)
+                return
         killed = target.take_damage(actual_amount, self) if isinstance(target, Troop) else target.take_damage(actual_amount)
+        if hasattr(target, "abilities"):
+            target.abilities.on_owner_damaged(actual_amount, source, source_pos, element, self)
         self.spawn_hit(target.pos, min(9, 3 + int(actual_amount / 8)))
         if killed:
             if isinstance(target, Troop):
                 self.kill_troop(target)
             else:
                 self.destroy_structure(target)
+
+    def _modify_friendly_incoming_damage(self, target, amount: float, source, source_pos: pygame.Vector2 | None, element: str) -> float:
+        if amount <= 0 or not hasattr(target, "abilities"):
+            return amount
+        return target.abilities.modify_incoming_damage(amount, source, source_pos, element, self)
+
+    def _redirect_fatal_friendly_damage(self, target, amount: float, source, source_pos: pygame.Vector2 | None, element: str):
+        if amount <= 0 or not getattr(target, "alive", False) or not hasattr(target, "health"):
+            return target
+        if amount < float(getattr(target, "health", 0.0)):
+            return target
+        if not self.troops:
+            return target
+        candidates = [
+            troop
+            for troop in self.nearby_troops(target.pos, 180.0)
+            if troop.alive and troop is not target and hasattr(troop, "abilities")
+        ]
+        candidates.sort(key=lambda troop: troop.pos.distance_to(target.pos))
+        for troop in candidates:
+            for ability in troop.abilities.abilities:
+                if not hasattr(ability, "try_intercept_fatal_damage"):
+                    continue
+                redirected = ability.try_intercept_fatal_damage(self, target, amount, source=source, source_pos=source_pos, element=element)
+                if redirected is not None:
+                    return redirected
+        return target
 
     def kill_troop(self, troop: Troop) -> None:
         if not troop.alive:
@@ -2371,6 +2423,9 @@ class GameState:
         for tower in self.towers:
             hovered = hover_kind == "structure" and hover_value == id(tower)
             tower.draw(surface, camera, viewport, tower is self.selected_tower, hovered)
+        for zone in self.ability_zones:
+            if self.is_world_explored(zone.pos, zone.radius):
+                zone.draw(surface, camera, viewport)
         for troop in self.troops:
             hovered = hover_kind == "troop" and hover_value == id(troop)
             troop.draw(surface, camera, viewport, troop in self.selected_troops, hovered)

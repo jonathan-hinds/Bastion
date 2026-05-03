@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pygame
 
 from bastion import config
-from bastion.engine.drawing import draw_circle_alpha
+from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha
 from bastion.game.combat import MeleeAttackController
 from bastion.game.elements import ElementalEffect
 from bastion.game.tower_mods import TOWER_MODS
@@ -23,6 +23,19 @@ class AbilityCard:
     passive: bool = False
     state: str = ""
     tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AbilityDefinition:
+    request_number: int
+    ability_id: str
+    name: str
+    description: str
+    passive: bool
+    factory: Callable[[object | None], "GameplayAbility"]
+
+    def create(self, owner=None) -> "GameplayAbility":
+        return self.factory(owner)
 
 
 class AbilitySystemComponent:
@@ -82,6 +95,33 @@ class AbilitySystemComponent:
             found = True
         return value, found
 
+    def modify_outgoing_damage(self, target, amount: float, element: str, game) -> float:
+        value = amount
+        for ability in self.abilities:
+            value = ability.modify_outgoing_damage(target, value, element, game)
+        return max(0.0, value)
+
+    def modify_incoming_damage(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> float:
+        value = amount
+        for ability in self.abilities:
+            value = ability.modify_incoming_damage(value, source, source_pos, element, game)
+            if value <= 0:
+                return 0.0
+        return max(0.0, value)
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        for ability in list(self.abilities):
+            ability.on_owner_damaged(amount, source, source_pos, element, game)
+
+    def on_ability_activated(self, activated: "GameplayAbility", game) -> None:
+        for ability in list(self.abilities):
+            if ability is activated:
+                continue
+            ability.on_owner_ability_activated(activated, game)
+
+    def has_status(self, status: str) -> bool:
+        return any(ability.has_status(status) for ability in self.abilities)
+
 
 class GameplayAbility:
     ability_id = "ability"
@@ -117,7 +157,13 @@ class GameplayAbility:
         if not self.ready:
             return False
         self.cooldown_remaining = self.effective_cooldown(game)
+        self._notify_activated(game)
         return True
+
+    def _notify_activated(self, game) -> None:
+        component = getattr(self.owner, "abilities", None)
+        if component is not None:
+            component.on_ability_activated(self, game)
 
     def display_name(self, game=None) -> str:
         return self.name
@@ -151,6 +197,21 @@ class GameplayAbility:
 
     def effect_multiplier(self, effect: str) -> float | None:
         return None
+
+    def modify_outgoing_damage(self, target, amount: float, element: str, game) -> float:
+        return amount
+
+    def modify_incoming_damage(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> float:
+        return amount
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        return
+
+    def on_owner_ability_activated(self, activated: "GameplayAbility", game) -> None:
+        return
+
+    def has_status(self, status: str) -> bool:
+        return False
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         return
@@ -254,11 +315,13 @@ class MeleeAttackAbility(CooldownDrivenAttack):
         hit = controller.strike(target, damage, reach, self.attack_cooldown(game), self._damage_callback(game))
         if hit and self.particle_count > 0:
             self._spawn_swing_particles(game)
+        if hit:
+            self._notify_activated(game)
         return hit
 
     def _damage_callback(self, game):
         if self.target_side == "friendly":
-            return lambda target, amount, source_pos: game.damage_friendly(target, amount, source_pos=source_pos, element=self.element)
+            return lambda target, amount, source_pos: game.damage_friendly(target, amount, source_pos=source_pos, element=self.element, source=self.owner)
         return lambda target, amount, source_pos: game.damage_enemy(target, amount, self.owner, source_pos=source_pos, element=self.element)
 
     def _spawn_swing_particles(self, game) -> None:
@@ -332,6 +395,7 @@ class MultiShotAttackAbility(CooldownDrivenAttack):
             game.damage_enemy(enemy, damage, self.owner, source_pos=pygame.Vector2(origin), element="physical")
             game.show_damage_impact(enemy.pos, "multi" if len(targets) > 1 else "single", 0.0)
         self.owner.support_pulse = 0.20
+        self._notify_activated(game)
         return True
 
     def detail_lines(self, game=None) -> list[str]:
@@ -402,6 +466,7 @@ class AreaElementalAttackAbility(CooldownDrivenAttack):
             hit_any = True
         if hit_any:
             self.owner.support_pulse = 0.24
+            self._notify_activated(game)
         return hit_any
 
     def detail_lines(self, game=None) -> list[str]:
@@ -440,9 +505,11 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
                 target=target,
                 speed=float(getattr(self.owner, "projectile_speed", 260.0)),
                 damage=float(getattr(self.owner, "damage", 0.0)),
+                owner=self.owner,
             )
         )
         game.spawn_hit(self.owner.pos, 2)
+        self._notify_activated(game)
         return True
 
     def detail_lines(self, game=None) -> list[str]:
@@ -525,6 +592,7 @@ class TowerProjectileAttackAbility(CooldownDrivenAttack):
                 projectile.trail = [pygame.Vector2(projectile.pos)]
             game.projectiles.append(projectile)
         spawn_launch_fx(game, self.owner, projectile_count, impact_kind)
+        self._notify_activated(game)
         return True
 
     def display_name(self, game=None) -> str:
@@ -893,6 +961,936 @@ class RechargeShieldAbility(SupportOverTimeAbility):
         ]
 
 
+class MissingHealthDamageBoostPassive(PassiveAbility):
+    ability_id = "catalog_bloodied_fury"
+    name = "Bloodied Fury"
+    description = "Deals increased damage equal to this unit's missing health percent."
+
+    def modify_outgoing_damage(self, target, amount: float, element: str, game) -> float:
+        max_health = max(1.0, float(getattr(self.owner, "max_health", 1.0)))
+        health = max(0.0, min(max_health, float(getattr(self.owner, "health", max_health))))
+        missing_ratio = 1.0 - health / max_health
+        return amount * (1.0 + missing_ratio)
+
+    def detail_lines(self, game=None) -> list[str]:
+        max_health = max(1.0, float(getattr(self.owner, "max_health", 1.0)))
+        health = max(0.0, min(max_health, float(getattr(self.owner, "health", max_health))))
+        bonus = int(round((1.0 - health / max_health) * 100))
+        return [f"Damage +{bonus}% now", "Scales with missing health"]
+
+
+class GuardianInterceptAbility(GameplayAbility):
+    ability_id = "catalog_guardian_intercept"
+    name = "Guardian Intercept"
+    description = "Redirects fatal damage from a nearby ally to this unit and pulls enemy aggro."
+
+    def __init__(self, owner=None, radius: float = 132.0, cooldown: float = 120.0, taunt_duration: float = 3.0) -> None:
+        super().__init__(owner, cooldown)
+        self.radius = radius
+        self.taunt_duration = taunt_duration
+
+    def try_intercept_fatal_damage(
+        self,
+        game,
+        target,
+        amount: float,
+        source=None,
+        source_pos: pygame.Vector2 | None = None,
+        element: str = "physical",
+    ):
+        if not self.ready or self.owner is target or not getattr(self.owner, "alive", False):
+            return None
+        if not getattr(target, "alive", False) or not hasattr(target, "health"):
+            return None
+        if amount < float(getattr(target, "health", 0.0)):
+            return None
+        if self.owner.pos.distance_to(target.pos) > self.radius + float(getattr(target, "radius", 0.0)):
+            return None
+        if not super().activate(game):
+            return None
+
+        self._transfer_aggro(game, target, amount)
+        self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.45)
+        if hasattr(game, "spawn_burst"):
+            game.spawn_burst(self.owner.pos, 12, 64)
+        if hasattr(game, "spawn_hit"):
+            game.spawn_hit(target.pos, 3)
+        return self.owner
+
+    def _transfer_aggro(self, game, protected, amount: float) -> None:
+        from bastion.game.entities import Beam
+
+        enemies = _nearby_enemies(game, protected.pos, self.radius + 340.0)
+        for enemy in enemies:
+            aggro = getattr(enemy, "aggro", None)
+            if aggro is None:
+                continue
+            entry = aggro.threat.pop(protected, None)
+            inherited = 0.0 if entry is None else entry.score
+            aggro.add_threat(self.owner, max(inherited, amount * 3.0 + 55.0), "taunt")
+            if aggro.current_target is protected:
+                aggro.current_target = self.owner
+                aggro.retarget_timer = 0.0
+            if getattr(enemy, "taunt_target", None) is protected:
+                enemy.apply_taunt(self.owner, self.taunt_duration)
+            if hasattr(game, "beams") and enemy.alive:
+                game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(enemy.pos), 0.14, 1))
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Radius {int(self.radius)}",
+            "Triggers on fatal ally damage",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 18 if self.ready else 8, 1)
+
+
+class DamageBlockAbility(GameplayAbility):
+    ability_id = "catalog_damage_block"
+    name = "Perfect Guard"
+    description = "Blocks all incoming damage during a short guard window."
+
+    def __init__(self, owner=None, block_duration: float = 1.0, cooldown: float = 5.0) -> None:
+        super().__init__(owner, cooldown)
+        self.block_duration = block_duration
+        self.block_remaining = 0.0
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        self.block_remaining = max(0.0, self.block_remaining - dt)
+
+    def activate(self, game, target=None) -> bool:
+        if not super().activate(game, target):
+            return False
+        self.block_remaining = self.block_duration
+        self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.25)
+        if hasattr(game, "spawn_hit"):
+            game.spawn_hit(self.owner.pos, 2)
+        return True
+
+    def modify_incoming_damage(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> float:
+        if amount <= 0 or not getattr(self.owner, "alive", False):
+            return amount
+        if self.block_remaining > 0:
+            return 0.0
+        if self.ready and self.activate(game):
+            return 0.0
+        return amount
+
+    def has_status(self, status: str) -> bool:
+        return status == "damage_block" and self.block_remaining > 0
+
+    def state_label(self, game=None) -> str:
+        if self.block_remaining > 0:
+            return "BLOCK"
+        return super().state_label(game)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Window {_format_seconds(self.block_duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+
+class VisionMarkConeAbility(GameplayAbility):
+    ability_id = "catalog_vision_mark"
+    name = "Hunter's Mark"
+    description = "Marks enemies in a forward cone, making troops and towers deal 20% more damage to them."
+
+    def __init__(
+        self,
+        owner=None,
+        angle_degrees: float = 58.0,
+        duration: float = 6.0,
+        damage_multiplier: float = 1.20,
+        cooldown: float = 18.0,
+    ) -> None:
+        super().__init__(owner, cooldown)
+        self.angle_degrees = angle_degrees
+        self.duration = duration
+        self.damage_multiplier = damage_multiplier
+
+    def should_auto_activate(self, game) -> bool:
+        return getattr(self.owner, "attack_enabled", True) and self._active_target(game) is not None
+
+    def _active_target(self, game):
+        target = getattr(self.owner, "target", None)
+        if target is not None and getattr(target, "alive", False):
+            return target
+        return None
+
+    def activate(self, game, target=None) -> bool:
+        target = target or self._active_target(game)
+        if target is None or not self.ready:
+            return False
+        attack_range = _owner_range(self.owner, game, 215.0)
+        affected = _enemies_in_cone(game, self.owner, target, attack_range, self.angle_degrees)
+        if not affected or not super().activate(game, target):
+            return False
+        for enemy in affected:
+            if hasattr(enemy, "apply_damage_vulnerability"):
+                enemy.apply_damage_vulnerability(self.damage_multiplier, self.duration, source_classes=("troop", "tower"))
+            if hasattr(game, "spawn_hit"):
+                game.spawn_hit(enemy.pos, 1)
+        self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.28)
+        return True
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            "Troop/tower damage +20%",
+            f"Cone {int(self.angle_degrees)} deg",
+            f"Duration {_format_seconds(self.duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        target = getattr(self.owner, "target", None)
+        if target is None:
+            return
+        _draw_cone_preview(surface, camera, viewport, self.owner, target, _owner_range(self.owner, None, 215.0), self.angle_degrees, 22 if self.ready else 10)
+
+
+class OutOfCombatRegenerationPassive(PassiveAbility):
+    ability_id = "catalog_out_of_combat_regeneration"
+    name = "Field Recovery"
+    description = "Regenerates all health over two minutes while out of combat."
+
+    def __init__(self, owner=None, full_heal_duration: float = 120.0, combat_grace: float = 5.0) -> None:
+        super().__init__(owner)
+        self.full_heal_duration = full_heal_duration
+        self.combat_grace = combat_grace
+        self.combat_timer = 0.0
+
+    def update(self, dt: float, game) -> None:
+        if not getattr(self.owner, "alive", False):
+            return
+        self.combat_timer = max(0.0, self.combat_timer - dt)
+        if self._owner_has_combat_pressure(game):
+            self.combat_timer = self.combat_grace
+        if self.combat_timer > 0:
+            return
+        amount = float(getattr(self.owner, "max_health", 0.0)) / max(1.0, self.full_heal_duration) * dt
+        game.restore_friendly(self.owner, amount, source=None, reason="regeneration", element="holy")
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        if amount > 0:
+            self.combat_timer = self.combat_grace
+
+    def _owner_has_combat_pressure(self, game) -> bool:
+        target = getattr(self.owner, "target", None)
+        if getattr(target, "alive", False):
+            return True
+        for enemy in _nearby_enemies(game, self.owner.pos, 520.0):
+            aggro = getattr(enemy, "aggro", None)
+            if aggro is None:
+                continue
+            if aggro.current_target is self.owner or self.owner in aggro.threat:
+                return True
+        return False
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [f"Full heal in {_format_seconds(self.full_heal_duration)}", "Only out of combat"]
+
+
+class PersistentAreaEffect:
+    def __init__(
+        self,
+        owner,
+        pos: pygame.Vector2,
+        radius: float,
+        duration: float,
+        enemy_dps: float = 0.0,
+        ally_hps: float = 0.0,
+        enemy_element: str = "physical",
+        ally_element: str = "holy",
+        fx_interval: float = 0.42,
+    ) -> None:
+        self.owner = owner
+        self.pos = pygame.Vector2(pos)
+        self.radius = radius
+        self.duration = duration
+        self.life = duration
+        self.enemy_dps = enemy_dps
+        self.ally_hps = ally_hps
+        self.enemy_element = enemy_element
+        self.ally_element = ally_element
+        self.fx_interval = fx_interval
+        self.fx_timer = 0.0
+        self.alive = True
+
+    def update(self, dt: float, game) -> None:
+        if not self.alive:
+            return
+        self.life -= dt
+        if self.life <= 0:
+            self.alive = False
+            return
+        if self.enemy_dps > 0:
+            for enemy in _nearby_enemies(game, self.pos, self.radius + 32.0):
+                if enemy.alive and enemy.pos.distance_to(self.pos) <= self.radius + enemy.radius:
+                    game.damage_enemy(enemy, self.enemy_dps * dt, self.owner, quiet=True, source_pos=self.pos, element=self.enemy_element)
+        if self.ally_hps > 0:
+            for troop in _nearby_troops(game, self.pos, self.radius + 24.0):
+                if troop.alive and troop.pos.distance_to(self.pos) <= self.radius + troop.radius:
+                    game.restore_friendly(troop, self.ally_hps * dt, self.owner, reason="heal", element=self.ally_element)
+        self.fx_timer -= dt
+        if self.fx_timer <= 0:
+            self.fx_timer = self.fx_interval
+            if hasattr(game, "show_damage_impact"):
+                game.show_damage_impact(self.pos, "aoe", self.radius)
+
+    def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        if not self.alive:
+            return
+        screen = camera.world_to_screen(self.pos, viewport)
+        t = max(0.0, self.life / max(0.01, self.duration))
+        alpha = int(18 + 34 * t)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, alpha, 1)
+        draw_circle_alpha(surface, screen, self.radius * 0.45 * camera.zoom, config.PALETTE.white, int(alpha * 0.55), 1)
+
+
+class ConsecrationAbility(GameplayAbility):
+    ability_id = "catalog_consecration"
+    name = "Consecration"
+    description = "Creates holy ground that damages enemies and heals allies for five seconds."
+
+    def __init__(self, owner=None, radius: float = 88.0, duration: float = 5.0, cooldown: float = 18.0) -> None:
+        super().__init__(owner, cooldown)
+        self.radius = radius
+        self.duration = duration
+
+    def should_auto_activate(self, game) -> bool:
+        if not getattr(self.owner, "attack_enabled", True):
+            return False
+        enemies = _nearby_enemies(game, self.owner.pos, self.radius + 34.0)
+        if any(enemy.alive and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius for enemy in enemies):
+            return True
+        troops = _nearby_troops(game, self.owner.pos, self.radius + 24.0)
+        return any(troop.alive and troop.health < troop.max_health and troop.pos.distance_to(self.owner.pos) <= self.radius + troop.radius for troop in troops)
+
+    def activate(self, game, target=None) -> bool:
+        if not super().activate(game, target):
+            return False
+        damage = max(4.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.55)
+        healing = max(3.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.42)
+        zone = PersistentAreaEffect(self.owner, self.owner.pos, self.radius, self.duration, damage, healing, enemy_element="holy", ally_element="holy")
+        if hasattr(game, "ability_zones"):
+            game.ability_zones.append(zone)
+        else:
+            zone.update(0.0, game)
+        self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.35)
+        return True
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Damage {_format_number(max(4.0, _owner_damage(self.owner, game, True) * 0.55))}/s holy",
+            f"Heal {_format_number(max(3.0, _owner_damage(self.owner, game, True) * 0.42))}/s",
+            f"Radius {int(self.radius)}",
+            f"Duration {_format_seconds(self.duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 24 if self.ready else 10, 1)
+
+
+class HolyAuraPassive(PassiveAbility):
+    ability_id = "catalog_holy_aura"
+    name = "Holy Aura"
+    description = "Heals nearby allies over two minutes."
+
+    def __init__(self, owner=None, radius: float = 82.0, full_heal_duration: float = 120.0, interval: float = 0.5) -> None:
+        super().__init__(owner)
+        self.radius = radius
+        self.full_heal_duration = full_heal_duration
+        self.interval = interval
+        self.timer = random.uniform(0.0, interval)
+
+    def update(self, dt: float, game) -> None:
+        if not getattr(self.owner, "alive", False):
+            return
+        self.timer -= dt
+        if self.timer > 0:
+            return
+        self.timer += max(0.05, self.interval)
+        healed = False
+        for troop in _nearby_troops(game, self.owner.pos, self.radius + 24.0):
+            if not troop.alive or troop.pos.distance_to(self.owner.pos) > self.radius + troop.radius:
+                continue
+            amount = troop.max_health / max(1.0, self.full_heal_duration) * self.interval
+            healed = game.restore_friendly(troop, amount, self.owner, reason="heal", element="holy") > 0 or healed
+        if healed:
+            self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.18)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [f"Radius {int(self.radius)}", f"Full heal in {_format_seconds(self.full_heal_duration)}"]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 18, 1)
+
+
+class InnerFireRetaliationAbility(GameplayAbility):
+    ability_id = "catalog_inner_fire"
+    name = "Inner Fire"
+    description = "Enemies that strike this unit are burned by retaliatory fire."
+
+    def __init__(self, owner=None, duration: float = 4.0, cooldown: float = 6.0) -> None:
+        super().__init__(owner, cooldown)
+        self.duration = duration
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        if amount <= 0 or source is None or not getattr(source, "alive", False):
+            return
+        self.activate(game, source)
+
+    def activate(self, game, target=None) -> bool:
+        if target is None or not getattr(target, "alive", False) or not super().activate(game, target):
+            return False
+        dps = self.effective_dps(game)
+        if hasattr(target, "apply_burn"):
+            target.apply_burn(dps, self.duration, self.owner, spread_radius=0.0)
+        from bastion.game.entities import Beam
+
+        if hasattr(game, "beams"):
+            game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(target.pos), 0.12, 1))
+        return True
+
+    def effective_dps(self, game=None) -> float:
+        return max(4.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.45)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Burn {_format_number(self.effective_dps(game))}/s",
+            f"Duration {_format_seconds(self.duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+
+class VanishAbility(GameplayAbility):
+    ability_id = "catalog_vanish"
+    name = "Vanish"
+    description = "Drops enemy aggro and briefly leaves perception when threat gets too high."
+
+    def __init__(self, owner=None, duration: float = 3.0, cooldown: float = 35.0, threat_threshold: float = 85.0) -> None:
+        super().__init__(owner, cooldown)
+        self.duration = duration
+        self.threat_threshold = threat_threshold
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        if hasattr(self.owner, "stealth_time"):
+            self.owner.stealth_time = max(0.0, self.owner.stealth_time - dt)
+        if self.ready and self.should_auto_activate(game):
+            self.activate(game)
+
+    def should_auto_activate(self, game) -> bool:
+        return getattr(self.owner, "alive", False) and self._aggro_pressure(game) >= self.threat_threshold
+
+    def _aggro_pressure(self, game) -> float:
+        pressure = 0.0
+        for enemy in _nearby_enemies(game, self.owner.pos, 620.0):
+            aggro = getattr(enemy, "aggro", None)
+            if aggro is None:
+                continue
+            entry = aggro.threat.get(self.owner)
+            if entry is not None:
+                pressure += entry.score
+            if aggro.current_target is self.owner:
+                pressure += 28.0
+        return pressure
+
+    def activate(self, game, target=None) -> bool:
+        if not super().activate(game, target):
+            return False
+        self.owner.stealth_time = self.duration
+        self.owner.target = None
+        navigator = getattr(self.owner, "navigator", None)
+        if navigator is not None and hasattr(navigator, "clear"):
+            navigator.clear()
+        for enemy in _nearby_enemies(game, self.owner.pos, 720.0):
+            aggro = getattr(enemy, "aggro", None)
+            if aggro is None:
+                continue
+            aggro.threat.pop(self.owner, None)
+            if aggro.current_target is self.owner:
+                aggro.current_target = None
+                aggro.retarget_timer = 0.0
+            if getattr(enemy, "taunt_target", None) is self.owner:
+                enemy.taunt_target = None
+                enemy.taunt_time = 0.0
+        if hasattr(game, "spawn_burst"):
+            game.spawn_burst(self.owner.pos, 10, 72)
+        return True
+
+    def has_status(self, status: str) -> bool:
+        return status == "stealth" and float(getattr(self.owner, "stealth_time", 0.0)) > 0
+
+    def state_label(self, game=None) -> str:
+        if float(getattr(self.owner, "stealth_time", 0.0)) > 0:
+            return "VANISH"
+        return super().state_label(game)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Stealth {_format_seconds(self.duration)}",
+            f"Threat trigger {int(self.threat_threshold)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+
+class WarMachineAbility(GameplayAbility):
+    ability_id = "catalog_war_machine"
+    name = "War Machine"
+    description = "Transforms into a rapid, slightly inaccurate machine gun platform."
+
+    def __init__(self, owner=None, duration: float = 20.0, cooldown: float = 60.0, fire_interval: float = 0.12, accuracy: float = 0.82) -> None:
+        super().__init__(owner, cooldown)
+        self.duration = duration
+        self.fire_interval = fire_interval
+        self.accuracy = accuracy
+        self.active_remaining = 0.0
+        self.fire_timer = 0.0
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        self.active_remaining = max(0.0, self.active_remaining - dt)
+        if self.active_remaining > 0:
+            self.fire_timer -= dt
+            while self.fire_timer <= 0 and self.active_remaining > 0:
+                self.fire_timer += self.fire_interval
+                self._fire_round(game)
+            return
+        if self.ready and self.should_auto_activate(game):
+            self.activate(game)
+
+    def should_auto_activate(self, game) -> bool:
+        return self._find_target(game) is not None
+
+    def activate(self, game, target=None) -> bool:
+        if not super().activate(game, target):
+            return False
+        self.active_remaining = self.duration
+        self.fire_timer = 0.0
+        self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.35)
+        return True
+
+    def _find_target(self, game):
+        attack_range = _owner_range(self.owner, game, 180.0)
+        target = getattr(self.owner, "target", None)
+        if getattr(target, "alive", False) and self.owner.pos.distance_to(target.pos) <= attack_range + target.radius:
+            return target
+        candidates = [
+            enemy
+            for enemy in _nearby_enemies(game, self.owner.pos, attack_range + 36.0)
+            if enemy.alive and enemy.pos.distance_to(self.owner.pos) <= attack_range + enemy.radius
+        ]
+        return min(candidates, key=lambda enemy: enemy.pos.distance_to(self.owner.pos)) if candidates else None
+
+    def _fire_round(self, game) -> None:
+        target = self._find_target(game)
+        if target is None:
+            return
+        from bastion.game.entities import Beam
+
+        origin = pygame.Vector2(self.owner.pos)
+        hit = random.random() <= self.accuracy
+        end = pygame.Vector2(target.pos)
+        if not hit:
+            end += pygame.Vector2(random.uniform(-18, 18), random.uniform(-18, 18))
+        if hasattr(game, "beams"):
+            game.beams.append(Beam(origin, end, 0.06, 1))
+        if hit:
+            damage = max(1.0, _owner_damage(self.owner, game) * 0.32)
+            game.damage_enemy(target, damage, self.owner, source_pos=origin, element="physical")
+        elif hasattr(game, "spawn_burst"):
+            game.spawn_burst(end, 2, 18)
+
+    def state_label(self, game=None) -> str:
+        if self.active_remaining > 0:
+            return "ACTIVE"
+        return super().state_label(game)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Duration {_format_seconds(self.duration)}",
+            f"Fire every {_format_seconds(self.fire_interval)}",
+            f"Accuracy {int(self.accuracy * 100)}%",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+
+class AggroFadeOnAbilityUsePassive(PassiveAbility):
+    ability_id = "catalog_aggro_fade"
+    name = "Quiet Casting"
+    description = "Using abilities steadily bleeds off enemy aggro."
+
+    def __init__(self, owner=None, fade_duration: float = 3.0, threat_decay_per_second: float = 24.0, immediate_fraction: float = 0.18) -> None:
+        super().__init__(owner)
+        self.fade_duration = fade_duration
+        self.threat_decay_per_second = threat_decay_per_second
+        self.immediate_fraction = immediate_fraction
+        self.fade_remaining = 0.0
+
+    def on_owner_ability_activated(self, activated: GameplayAbility, game) -> None:
+        if activated.passive:
+            return
+        self.fade_remaining = self.fade_duration
+        self._reduce_threat(game, fraction=self.immediate_fraction, flat=8.0)
+
+    def update(self, dt: float, game) -> None:
+        if self.fade_remaining <= 0:
+            return
+        self.fade_remaining = max(0.0, self.fade_remaining - dt)
+        self._reduce_threat(game, fraction=0.0, flat=self.threat_decay_per_second * dt)
+
+    def _reduce_threat(self, game, fraction: float, flat: float) -> None:
+        for enemy in _nearby_enemies(game, self.owner.pos, 680.0):
+            aggro = getattr(enemy, "aggro", None)
+            if aggro is None:
+                continue
+            entry = aggro.threat.get(self.owner)
+            if entry is None:
+                continue
+            entry.score = max(0.0, entry.score * (1.0 - fraction) - flat)
+            if entry.score <= 0:
+                aggro.threat.pop(self.owner, None)
+                if aggro.current_target is self.owner:
+                    aggro.current_target = None
+                    aggro.retarget_timer = 0.0
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [f"Fade {_format_seconds(self.fade_duration)}", f"Threat -{_format_number(self.threat_decay_per_second)}/s"]
+
+
+class ElectricJoltPassive(PassiveAbility):
+    ability_id = "catalog_electric_jolt"
+    name = "Static Jolt"
+    description = "When struck, releases a burst that stuns nearby enemies."
+
+    def __init__(self, owner=None, radius: float = 96.0, stun_duration: float = 2.0, recovery: float = 8.0) -> None:
+        super().__init__(owner)
+        self.radius = radius
+        self.stun_duration = stun_duration
+        self.recovery = recovery
+        self.recovery_remaining = 0.0
+
+    def update(self, dt: float, game) -> None:
+        self.recovery_remaining = max(0.0, self.recovery_remaining - dt)
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        if amount <= 0 or self.recovery_remaining > 0:
+            return
+        affected = [
+            enemy
+            for enemy in _nearby_enemies(game, self.owner.pos, self.radius + 32.0)
+            if enemy.alive and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius
+        ]
+        if not affected:
+            return
+        from bastion.game.entities import Beam
+
+        self.recovery_remaining = self.recovery
+        for enemy in affected:
+            enemy.apply_stun(self.stun_duration)
+            if hasattr(game, "beams"):
+                game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(enemy.pos), 0.12, 1))
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(self.owner.pos, "aoe", self.radius)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [f"Radius {int(self.radius)}", f"Stun {_format_seconds(self.stun_duration)}", f"Recovery {_format_seconds(self.recovery)}"]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 16, 1)
+
+
+class FrostNovaAbility(GameplayAbility):
+    ability_id = "catalog_frost_nova"
+    name = "Frost Nova"
+    description = "Pushes close enemies away and freezes them in place."
+
+    def __init__(self, owner=None, radius: float = 86.0, stun_duration: float = 2.0, cooldown: float = 14.0, knockback: float = 190.0) -> None:
+        super().__init__(owner, cooldown)
+        self.radius = radius
+        self.stun_duration = stun_duration
+        self.knockback = knockback
+
+    def should_auto_activate(self, game) -> bool:
+        return any(enemy.alive and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius for enemy in _nearby_enemies(game, self.owner.pos, self.radius + 32.0))
+
+    def activate(self, game, target=None) -> bool:
+        affected = [
+            enemy
+            for enemy in _nearby_enemies(game, self.owner.pos, self.radius + 32.0)
+            if enemy.alive and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius
+        ]
+        if not affected or not super().activate(game, target):
+            return False
+        for enemy in affected:
+            direction = enemy.pos - self.owner.pos
+            if direction.length_squared() == 0:
+                direction = pygame.Vector2(1, 0)
+            enemy.vel += direction.normalize() * (self.knockback / max(0.5, float(getattr(enemy, "mass", 1.0))))
+            enemy.apply_stun(self.stun_duration)
+            enemy.apply_slow(0.35, self.stun_duration, 0.55)
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(self.owner.pos, "aoe", self.radius)
+        return True
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Radius {int(self.radius)}",
+            f"Freeze {_format_seconds(self.stun_duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 22 if self.ready else 9, 1)
+
+
+class DragonBreathAbility(GameplayAbility):
+    ability_id = "catalog_dragon_breath"
+    name = "Dragon Breath"
+    description = "Exhales a cone of flame that damages and burns enemies."
+
+    def __init__(self, owner=None, range_override: float | None = None, angle_degrees: float = 64.0, cooldown: float = 12.0, burn_duration: float = 3.5) -> None:
+        super().__init__(owner, cooldown)
+        self.range_override = range_override
+        self.angle_degrees = angle_degrees
+        self.burn_duration = burn_duration
+
+    def should_auto_activate(self, game) -> bool:
+        return getattr(self.owner, "attack_enabled", True) and getattr(getattr(self.owner, "target", None), "alive", False)
+
+    def activate(self, game, target=None) -> bool:
+        target = target or getattr(self.owner, "target", None)
+        if target is None or not getattr(target, "alive", False) or not self.ready:
+            return False
+        reach = self.range_override if self.range_override is not None else max(120.0, _owner_range(self.owner, game, 120.0))
+        affected = _enemies_in_cone(game, self.owner, target, reach, self.angle_degrees)
+        if not affected or not super().activate(game, target):
+            return False
+        base_damage = max(5.0, _owner_damage(self.owner, game, prefer_magic=True) * 1.25)
+        burn_dps = max(3.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.32)
+        for enemy in affected:
+            distance = enemy.pos.distance_to(self.owner.pos)
+            falloff = 1.0 - min(0.35, distance / max(1.0, reach) * 0.35)
+            game.damage_enemy(enemy, base_damage * falloff, self.owner, source_pos=self.owner.pos, element="fire")
+            if enemy.alive:
+                enemy.apply_burn(burn_dps, self.burn_duration, self.owner, spread_radius=0.0)
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(self.owner.pos, "aoe", min(reach, 110.0))
+        return True
+
+    def detail_lines(self, game=None) -> list[str]:
+        reach = self.range_override if self.range_override is not None else max(120.0, _owner_range(self.owner, game, 120.0))
+        return [
+            f"Damage {_format_number(max(5.0, _owner_damage(self.owner, game, True) * 1.25))} fire",
+            f"Cone {int(self.angle_degrees)} deg",
+            f"Range {int(reach)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        target = getattr(self.owner, "target", None)
+        if target is None:
+            return
+        reach = self.range_override if self.range_override is not None else max(120.0, _owner_range(self.owner, None, 120.0))
+        _draw_cone_preview(surface, camera, viewport, self.owner, target, reach, self.angle_degrees, 22 if self.ready else 9)
+
+
+class AttackRangeSlowAuraPassive(PassiveAbility):
+    ability_id = "catalog_slowing_presence"
+    name = "Slowing Presence"
+    description = "Enemies inside this unit's attack range are slowed."
+
+    def __init__(self, owner=None, slow_multiplier: float = 0.70, attack_slow_multiplier: float = 0.86, interval: float = 0.22) -> None:
+        super().__init__(owner)
+        self.slow_multiplier = slow_multiplier
+        self.attack_slow_multiplier = attack_slow_multiplier
+        self.interval = interval
+        self.timer = random.uniform(0.0, interval)
+
+    def update(self, dt: float, game) -> None:
+        if not getattr(self.owner, "alive", False):
+            return
+        self.timer -= dt
+        if self.timer > 0:
+            return
+        self.timer += max(0.05, self.interval)
+        radius = _owner_range(self.owner, game, 96.0)
+        for enemy in _nearby_enemies(game, self.owner.pos, radius + 32.0):
+            if enemy.alive and enemy.pos.distance_to(self.owner.pos) <= radius + enemy.radius:
+                enemy.apply_slow(self.slow_multiplier, self.interval * 2.2, self.attack_slow_multiplier)
+
+    def detail_lines(self, game=None) -> list[str]:
+        slow_pct = int((1.0 - self.slow_multiplier) * 100)
+        return [f"Slow {slow_pct}%", f"Radius {int(_owner_range(self.owner, game, 0.0))}"]
+
+
+class SiphonLifeAbility(GameplayAbility):
+    ability_id = "catalog_siphon_life"
+    name = "Siphon Life"
+    description = "Drains life from all nearby enemies and heals this unit."
+
+    def __init__(self, owner=None, radius: float = 118.0, duration: float = 20.0, cooldown: float = 60.0, tick_interval: float = 0.4) -> None:
+        super().__init__(owner, cooldown)
+        self.radius = radius
+        self.duration = duration
+        self.tick_interval = tick_interval
+        self.active_remaining = 0.0
+        self.tick_timer = 0.0
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        self.active_remaining = max(0.0, self.active_remaining - dt)
+        if self.active_remaining > 0:
+            self.tick_timer -= dt
+            while self.tick_timer <= 0 and self.active_remaining > 0:
+                self.tick_timer += self.tick_interval
+                self._tick(game)
+            return
+        if self.ready and self.should_auto_activate(game):
+            self.activate(game)
+
+    def should_auto_activate(self, game) -> bool:
+        return any(enemy.alive and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius for enemy in _nearby_enemies(game, self.owner.pos, self.radius + 32.0))
+
+    def activate(self, game, target=None) -> bool:
+        if not super().activate(game, target):
+            return False
+        self.active_remaining = self.duration
+        self.tick_timer = 0.0
+        return True
+
+    def _tick(self, game) -> None:
+        dps = self.effective_dps(game)
+        total_drained = 0.0
+        from bastion.game.entities import Beam
+
+        for enemy in _nearby_enemies(game, self.owner.pos, self.radius + 32.0):
+            if not enemy.alive or enemy.pos.distance_to(self.owner.pos) > self.radius + enemy.radius:
+                continue
+            before = float(enemy.health)
+            game.damage_enemy(enemy, dps * self.tick_interval, self.owner, quiet=True, source_pos=self.owner.pos, element="holy")
+            total_drained += max(0.0, before - float(getattr(enemy, "health", before)))
+            if hasattr(game, "beams"):
+                game.beams.append(Beam(pygame.Vector2(enemy.pos), pygame.Vector2(self.owner.pos), 0.10, 1))
+        if total_drained > 0:
+            game.restore_friendly(self.owner, total_drained, source=None, reason="lifesteal", element="holy")
+            self.owner.support_pulse = max(getattr(self.owner, "support_pulse", 0.0), 0.22)
+
+    def effective_dps(self, game=None) -> float:
+        return max(4.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.36)
+
+    def state_label(self, game=None) -> str:
+        if self.active_remaining > 0:
+            return "ACTIVE"
+        return super().state_label(game)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Drain {_format_number(self.effective_dps(game))}/s",
+            f"Radius {int(self.radius)}",
+            f"Duration {_format_seconds(self.duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 22 if self.ready else 9, 1)
+
+
+class ArcaneFocusAbility(GameplayAbility):
+    ability_id = "catalog_arcane_focus"
+    name = "Arcane Focus"
+    description = "Channels a beam into one target for three seconds, ramping damage exponentially."
+
+    def __init__(self, owner=None, duration: float = 3.0, cooldown: float = 16.0, tick_interval: float = 0.18, growth: float = 2.15) -> None:
+        super().__init__(owner, cooldown)
+        self.duration = duration
+        self.tick_interval = tick_interval
+        self.growth = growth
+        self.channel_remaining = 0.0
+        self.elapsed = 0.0
+        self.tick_timer = 0.0
+        self.channel_target = None
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        if self.channel_remaining > 0:
+            self.channel_remaining = max(0.0, self.channel_remaining - dt)
+            self.elapsed += dt
+            if not getattr(self.channel_target, "alive", False) or self.owner.pos.distance_to(self.channel_target.pos) > _owner_range(self.owner, game, 150.0) + self.channel_target.radius:
+                self.channel_remaining = 0.0
+                self.channel_target = None
+                return
+            self.tick_timer -= dt
+            while self.tick_timer <= 0 and self.channel_remaining > 0:
+                self.tick_timer += self.tick_interval
+                self._tick(game)
+            return
+        if self.ready and self.should_auto_activate(game):
+            self.activate(game)
+
+    def should_auto_activate(self, game) -> bool:
+        return self._find_target(game) is not None
+
+    def _find_target(self, game):
+        attack_range = _owner_range(self.owner, game, 150.0)
+        target = getattr(self.owner, "target", None)
+        if getattr(target, "alive", False) and self.owner.pos.distance_to(target.pos) <= attack_range + target.radius:
+            return target
+        candidates = [
+            enemy
+            for enemy in _nearby_enemies(game, self.owner.pos, attack_range + 32.0)
+            if enemy.alive and enemy.pos.distance_to(self.owner.pos) <= attack_range + enemy.radius
+        ]
+        return min(candidates, key=lambda enemy: enemy.pos.distance_to(self.owner.pos)) if candidates else None
+
+    def activate(self, game, target=None) -> bool:
+        target = target or self._find_target(game)
+        if target is None or not super().activate(game, target):
+            return False
+        self.channel_target = target
+        self.channel_remaining = self.duration
+        self.elapsed = 0.0
+        self.tick_timer = 0.0
+        return True
+
+    def _tick(self, game) -> None:
+        if self.channel_target is None:
+            return
+        from bastion.game.entities import Beam
+
+        dps = self.effective_starting_dps(game) * (self.growth ** (self.elapsed / max(0.01, self.duration) * 2.2))
+        game.damage_enemy(self.channel_target, dps * self.tick_interval, self.owner, quiet=True, source_pos=self.owner.pos, element="lightning")
+        if hasattr(game, "beams") and getattr(self.channel_target, "alive", False):
+            game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(self.channel_target.pos), 0.10, 2))
+
+    def effective_starting_dps(self, game=None) -> float:
+        return max(5.0, _owner_damage(self.owner, game, prefer_magic=True) * 0.58)
+
+    def state_label(self, game=None) -> str:
+        if self.channel_remaining > 0:
+            return "FOCUS"
+        return super().state_label(game)
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [
+            f"Starts {_format_number(self.effective_starting_dps(game))}/s",
+            f"Duration {_format_seconds(self.duration)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+
+
 class TargetPriorityPassive(PassiveAbility):
     ability_id = "target_ranged_priority"
     name = "Ranged Priority"
@@ -1110,6 +2108,47 @@ class StatModifierPassive(PassiveAbility):
         return None
 
 
+def _catalog_definition(request_number: int, ability_cls: type[GameplayAbility]) -> AbilityDefinition:
+    return AbilityDefinition(
+        request_number=request_number,
+        ability_id=str(getattr(ability_cls, "ability_id", "")),
+        name=str(getattr(ability_cls, "name", ability_cls.__name__)),
+        description=str(getattr(ability_cls, "description", "")),
+        passive=bool(getattr(ability_cls, "passive", False)),
+        factory=lambda owner=None, cls=ability_cls: cls(owner),
+    )
+
+
+CATALOG_ABILITY_DEFINITIONS: dict[int, AbilityDefinition] = {
+    1: _catalog_definition(1, MissingHealthDamageBoostPassive),
+    2: _catalog_definition(2, GuardianInterceptAbility),
+    3: _catalog_definition(3, DamageBlockAbility),
+    4: _catalog_definition(4, VisionMarkConeAbility),
+    5: _catalog_definition(5, OutOfCombatRegenerationPassive),
+    7: _catalog_definition(7, ConsecrationAbility),
+    8: _catalog_definition(8, HolyAuraPassive),
+    9: _catalog_definition(9, InnerFireRetaliationAbility),
+    10: _catalog_definition(10, VanishAbility),
+    11: _catalog_definition(11, WarMachineAbility),
+    12: _catalog_definition(12, AggroFadeOnAbilityUsePassive),
+    13: _catalog_definition(13, ElectricJoltPassive),
+    14: _catalog_definition(14, FrostNovaAbility),
+    15: _catalog_definition(15, DragonBreathAbility),
+    16: _catalog_definition(16, AttackRangeSlowAuraPassive),
+    17: _catalog_definition(17, SiphonLifeAbility),
+    18: _catalog_definition(18, ArcaneFocusAbility),
+}
+
+
+def catalog_ability_definitions() -> dict[int, AbilityDefinition]:
+    return dict(CATALOG_ABILITY_DEFINITIONS)
+
+
+def create_catalog_ability(request_number: int, owner=None) -> GameplayAbility:
+    definition = CATALOG_ABILITY_DEFINITIONS[request_number]
+    return definition.create(owner)
+
+
 def configure_troop_abilities(owner) -> AbilitySystemComponent:
     component = getattr(owner, "abilities", None)
     if component is None:
@@ -1259,6 +2298,97 @@ def spawn_launch_fx(game, owner, projectile_count: int, impact_kind: str) -> Non
         speed = random.uniform(10, spread)
         vel = pygame.Vector2(math.cos(angle), math.sin(angle)) * speed
         game.particles.append(Particle(pygame.Vector2(owner.pos), vel, 0.16, 2.0 if projectile_count <= 1 else 2.4))
+
+
+def _owner_stats(owner, game=None) -> dict[str, float]:
+    if owner is not None and hasattr(owner, "stats"):
+        return owner.stats(game)
+    return {}
+
+
+def _owner_damage(owner, game=None, prefer_magic: bool = False) -> float:
+    stats = _owner_stats(owner, game)
+    if prefer_magic and "magic_damage" in stats:
+        return float(stats.get("magic_damage", 0.0))
+    if "damage" in stats:
+        return float(stats.get("damage", 0.0))
+    return float(getattr(owner, "damage", getattr(owner, "base_damage", 0.0)))
+
+
+def _owner_range(owner, game=None, default: float = 0.0) -> float:
+    stats = _owner_stats(owner, game)
+    if "range" in stats:
+        return float(stats.get("range", default))
+    for attr in ("attack_range", "base_range", "station_range"):
+        if hasattr(owner, attr):
+            return float(getattr(owner, attr))
+    return default
+
+
+def _nearby_enemies(game, pos: pygame.Vector2, radius: float):
+    if hasattr(game, "targetable_enemies_near"):
+        return game.targetable_enemies_near(pos, radius)
+    if hasattr(game, "nearby_enemies"):
+        return game.nearby_enemies(pos, radius)
+    return getattr(game, "enemies", [])
+
+
+def _nearby_troops(game, pos: pygame.Vector2, radius: float):
+    if hasattr(game, "nearby_troops"):
+        return game.nearby_troops(pos, radius)
+    return getattr(game, "troops", [])
+
+
+def _enemies_in_cone(game, owner, target, reach: float, angle_degrees: float):
+    origin = pygame.Vector2(owner.pos)
+    direction = pygame.Vector2(target.pos) - origin
+    if direction.length_squared() == 0:
+        direction = pygame.Vector2(getattr(owner, "swing_dir", (1, 0)))
+    if direction.length_squared() == 0:
+        direction = pygame.Vector2(1, 0)
+    direction = direction.normalize()
+    half_cos = math.cos(math.radians(angle_degrees) * 0.5)
+    affected = []
+    for enemy in _nearby_enemies(game, origin, reach + 36.0):
+        if not enemy.alive:
+            continue
+        if hasattr(owner, "_enemy_inside_station") and not owner._enemy_inside_station(enemy):
+            continue
+        offset = pygame.Vector2(enemy.pos) - origin
+        distance = offset.length()
+        if distance > reach + enemy.radius:
+            continue
+        if distance <= max(float(getattr(owner, "radius", 0.0)), enemy.radius):
+            affected.append(enemy)
+            continue
+        if offset.normalize().dot(direction) >= half_cos:
+            affected.append(enemy)
+    return affected
+
+
+def _draw_cone_preview(
+    surface: pygame.Surface,
+    camera,
+    viewport: pygame.Rect,
+    owner,
+    target,
+    reach: float,
+    angle_degrees: float,
+    alpha: int,
+) -> None:
+    origin = pygame.Vector2(owner.pos)
+    direction = pygame.Vector2(target.pos) - origin
+    if direction.length_squared() == 0:
+        direction = pygame.Vector2(1, 0)
+    direction = direction.normalize()
+    left = direction.rotate(-angle_degrees * 0.5)
+    right = direction.rotate(angle_degrees * 0.5)
+    start = camera.world_to_screen(origin, viewport)
+    a = camera.world_to_screen(origin + left * reach, viewport)
+    b = camera.world_to_screen(origin + right * reach, viewport)
+    draw_line_alpha(surface, start, a, config.PALETTE.white, alpha, 1)
+    draw_line_alpha(surface, start, b, config.PALETTE.white, alpha, 1)
+    draw_line_alpha(surface, a, b, config.PALETTE.white, max(6, int(alpha * 0.6)), 1)
 
 
 def _is_combat_stat_modifier(effects: dict[str, object]) -> bool:

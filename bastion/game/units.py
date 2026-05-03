@@ -939,6 +939,7 @@ class Troop:
         self.attack_enabled = True
         self.hit_flash = 0.0
         self.taunt_pulse = 0.0
+        self.stealth_time = 0.0
         self.swing_time = 0.0
         self.swing_duration = {"grunt": 0.18, "warrior": 0.24, "archer": 0.22, "cleric": 0.20, "engineer": 0.22, "wizard": 0.24}.get(kind, 0.20)
         self.swing_dir = pygame.Vector2(1, 0)
@@ -1388,6 +1389,9 @@ class Troop:
         if self.support_pulse > 0:
             t = self.support_pulse / 0.35
             draw_circle_alpha(surface, screen, (r + 18 * (1 - t)) * camera.zoom, config.PALETTE.white, int(88 * t), 1)
+        if self.stealth_time > 0:
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.018)
+            draw_circle_alpha(surface, screen, (r + 9 + pulse * 3) * camera.zoom, config.PALETTE.white, 38, 1)
         if not self.attack_enabled:
             draw_circle_alpha(surface, screen, (r + 8) * camera.zoom, config.PALETTE.white, 46, 1)
             draw_line_alpha(
