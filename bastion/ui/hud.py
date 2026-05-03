@@ -7,7 +7,9 @@ import pygame
 
 from bastion import config
 from bastion.engine import hover_feedback
+from bastion.game.abilities import AbilityCard
 from bastion.game.build_catalog import BUILD_CATEGORY_BY_ID, BuildMenuEntry, iter_build_categories
+from bastion.game.hero_trees import HeroNodeDefinition, HeroTreeDefinition
 from bastion.game.items import ITEM_DEFINITIONS
 from bastion.game.research import RESEARCH_DEFINITIONS
 from bastion.game.tower_defs import SPECIALIZATIONS, xp_needed
@@ -19,6 +21,7 @@ from bastion.ui.widgets import Button
 
 BASE_TOOLBAR_ENTRY = ("build", "B", "Build")
 LEVEL_TOOLBAR_ENTRY = ("level", "L", "Levels")
+HERO_TOOLBAR_ENTRY = ("hero", "H", "Hero")
 INSPECTOR_TOOLBAR_ENTRY = ("inspector", "N", "Inspect")
 
 RESEARCH_CATEGORIES = (
@@ -30,7 +33,7 @@ RESEARCH_CATEGORIES = (
 TROOP_DESCRIPTIONS = {
     "grunt": "Worker unit. Harvests mineral and gold deposits and returns them to the nearest core.",
     "warrior": "Heavy melee unit. Taunts enemies and holds attention inside its station radius.",
-    "archer": "Long-range troop. Fires up to three shots and prioritizes ranged enemies.",
+    "archer": "Long-range troop. Fires precise single shots and prioritizes ranged enemies.",
     "cleric": "Support unit. Heals damaged troops while staying near station.",
     "engineer": "Support unit. Repairs damaged towers when stationed nearby.",
     "wizard": "Short-range caster. Chains lightning between nearby enemies.",
@@ -63,6 +66,7 @@ class HUD:
             "research": PanelWindow("research", "Bastion // Research", (780, 620), (160, 130)),
             "items": PanelWindow("items", "Bastion // Inventory", (640, 520), (200, 160)),
             "level": PanelWindow("level", "Bastion // Level Up", (560, 560), (220, 140)),
+            "hero": PanelWindow("hero", "Bastion // Hero Hall", (860, 640), (180, 120)),
             "inspector": PanelWindow("inspector", "Bastion // Inspector", (360, 640), (980, 120)),
         }
         self.window_buttons: dict[str, list[Button]] = {}
@@ -73,6 +77,11 @@ class HUD:
         self.tooltip_request: TooltipRequest | None = None
         self.item_drag: dict | None = None
         self.item_context_menu: dict | None = None
+        self.hero_tree_zoom = 1.0
+        self.hero_tree_pan = pygame.Vector2(0, 0)
+        self.hero_tree_dragging = False
+        self.hero_tree_drag_last = pygame.Vector2(0, 0)
+        self.hero_tree_context_signature: tuple[str, int] | None = None
 
     def _mouse_pos(self) -> tuple[int, int]:
         return self.render_mouse_pos
@@ -138,6 +147,8 @@ class HUD:
                 buttons.extend(self._layout_item_buttons(panel_rect, state))
             elif self.active_panel == "level":
                 buttons.extend(self._layout_level_buttons(panel_rect, state))
+            elif self.active_panel == "hero":
+                buttons.extend(self._layout_hero_buttons(panel_rect, state))
 
         if choosing_event:
             for event, rect in self._event_card_rects(viewport, state):
@@ -192,6 +203,8 @@ class HUD:
             entries.append(("units", "U", "Units"))
         if self._living_research_labs(state):
             entries.append(("research", "R", "Research"))
+        if self._hero_panel_available(state):
+            entries.append(HERO_TOOLBAR_ENTRY)
         if any(getattr(building, "kind", "") == "library" and getattr(building, "alive", False) for building in state.buildings) or any(
             slot is not None for slot in getattr(state.inventory, "slots", [])
         ):
@@ -203,6 +216,22 @@ class HUD:
 
     def _living_research_labs(self, state) -> list:
         return [building for building in state.buildings if getattr(building, "kind", "") == "research" and getattr(building, "alive", False)]
+
+    def _living_hero_halls(self, state) -> list:
+        return [building for building in state.buildings if getattr(building, "kind", "") == "hero_hall" and getattr(building, "alive", False)]
+
+    def _hero_panel_available(self, state) -> bool:
+        selected = getattr(state, "selected_troop", None)
+        if selected is not None and getattr(selected, "alive", False) and getattr(selected, "has_hero_tree", lambda: False)():
+            return True
+        if self._living_hero_halls(state):
+            return True
+        return any(
+            getattr(troop, "alive", False)
+            and getattr(troop, "has_hero_tree", lambda: False)()
+            and getattr(troop, "hero_orbs", 0) > 0
+            for troop in getattr(state, "troops", [])
+        )
 
     def _best_barracks(self, state):
         barracks = self._living_barracks(state)
@@ -235,6 +264,9 @@ class HUD:
         if self.active_panel == "research" and not self._living_research_labs(state):
             self.active_panel = None
             self.research_panel_lab = None
+        if self.active_panel == "hero" and not self._hero_panel_available(state):
+            self.active_panel = None
+            self.hero_tree_dragging = False
 
         if self.units_panel_barracks is not None and not getattr(self.units_panel_barracks, "alive", False):
             self.units_panel_barracks = None
@@ -246,6 +278,8 @@ class HUD:
             signature = ("barracks", id(state.selected_barracks))
         elif state.selected_research is not None and getattr(state.selected_research, "alive", False):
             signature = ("research", id(state.selected_research))
+        elif getattr(state, "selected_hero_hall", None) is not None and getattr(state.selected_hero_hall, "alive", False):
+            signature = ("hero_hall", id(state.selected_hero_hall))
 
         if signature is None:
             self.last_context_signature = None
@@ -268,6 +302,12 @@ class HUD:
                 self.open_panel_window("research")
             self.dialog_scroll = 0.0
             self.dialog_scroll_max = 0.0
+        elif signature[0] == "hero_hall":
+            self.active_panel = "hero"
+            if self._using_external_windows():
+                self.open_panel_window("hero")
+            self.dialog_scroll = 0.0
+            self.dialog_scroll_max = 0.0
 
     def handle_event(self, event: pygame.event.Event, state, screen_rect: pygame.Rect | None = None, viewport: pygame.Rect | None = None) -> bool:
         if screen_rect is None or viewport is None:
@@ -277,6 +317,9 @@ class HUD:
             return self._handle_scroll(event, state, screen_rect, viewport)
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self.hero_tree_dragging:
+                self.hero_tree_dragging = False
+                return True
             if self.item_drag is not None:
                 self._finish_item_drag(event.pos, viewport, state)
                 return True
@@ -291,6 +334,10 @@ class HUD:
             rect.topleft = (int(new_pos.x), int(new_pos.y))
             rect = self._clamp_panel_rect(rect, screen_rect, viewport)
             self.dialog_positions[panel] = rect.topleft
+            return True
+
+        if event.type == pygame.MOUSEMOTION and self.hero_tree_dragging:
+            self._drag_hero_tree(event.pos)
             return True
 
         if event.type == pygame.MOUSEMOTION and self.item_drag is not None:
@@ -331,6 +378,12 @@ class HUD:
                 rect = self._active_panel_rect(screen_rect, viewport)
                 self.drag_offset = pygame.Vector2(pos) - pygame.Vector2(rect.topleft)
                 return True
+
+            if self.active_panel == "hero":
+                panel_rect = self._active_panel_rect(screen_rect, viewport)
+                if self._hero_canvas_rect(panel_rect).collidepoint(pos):
+                    self._start_hero_drag(pos)
+                    return True
 
             if self._blocks_world_input(pos, screen_rect, viewport, state):
                 return True
@@ -517,6 +570,9 @@ class HUD:
             panel_rect = self._active_panel_rect(screen_rect, viewport)
             content_rect = self._dialog_content_rect(panel_rect)
             if panel_rect.collidepoint(mouse):
+                if self.active_panel == "hero" and self._hero_canvas_rect(panel_rect).collidepoint(mouse):
+                    self._zoom_hero_tree(mouse, event.y, panel_rect)
+                    return True
                 if content_rect.collidepoint(mouse) and self.dialog_scroll_max > 0:
                     self.dialog_scroll = max(0.0, min(self.dialog_scroll_max, self.dialog_scroll - event.y * 48))
                 return True
@@ -529,6 +585,8 @@ class HUD:
                 self.units_panel_barracks = None
             elif panel == "research":
                 self.research_panel_lab = None
+            elif panel == "hero":
+                self._reset_hero_view_if_context_changed(state, force=True)
             if self._using_external_windows():
                 self.toggle_panel_window(panel)
                 self.active_panel = panel if self.panel_windows[panel].visible else None
@@ -547,6 +605,8 @@ class HUD:
                 self.units_panel_barracks = state.selected_barracks
             elif panel == "research":
                 self.research_panel_lab = state.selected_research
+            elif panel == "hero":
+                self._reset_hero_view_if_context_changed(state, force=True)
             if self._using_external_windows():
                 self.open_panel_window(panel)
             self.active_panel = panel
@@ -579,6 +639,8 @@ class HUD:
             state.level_up_selected_troop()
         elif button.command == "troop_attribute":
             state.allocate_selected_troop_attribute(str(button.value))
+        elif button.command == "hero_node":
+            state.purchase_hero_node_for_selected(str(button.value))
         elif button.command == "focus_level_tower":
             if state.select_tower_for_upgrade(button.value):
                 if self._using_external_windows():
@@ -714,6 +776,9 @@ class HUD:
             elif panel == "level":
                 self._draw_level_panel(surface, content_rect, state)
                 buttons = self._layout_level_buttons(content_rect, state)
+            elif panel == "hero":
+                self._draw_hero_panel(surface, content_rect, state)
+                buttons = self._layout_hero_buttons(content_rect, state)
             elif panel == "inspector":
                 self._draw_context_inspector_panel(surface, content_rect, state)
                 buttons = self._layout_context_buttons_for_rect(content_rect, state)
@@ -735,10 +800,14 @@ class HUD:
         for event in window.pop_events():
             if event.kind == "motion":
                 window.handle_mouse_motion(event.rel)
+                if panel == "hero" and self.hero_tree_dragging:
+                    self._drag_hero_tree(event.pos)
                 self._update_panel_window_hover(panel, event.pos, state)
                 continue
             if event.kind == "up" and event.button == 1:
                 window.handle_mouse_up()
+                if panel == "hero":
+                    self.hero_tree_dragging = False
                 continue
             if event.kind == "wheel":
                 self._scroll_panel_window(panel, window, event.pos, event.wheel_y, state)
@@ -759,6 +828,13 @@ class HUD:
                     state.play_sound("menu_select")
                     self._execute(button, state)
                     break
+            else:
+                if panel == "hero":
+                    surface = window.surface()
+                    if surface is not None:
+                        panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
+                        if self._hero_canvas_rect(panel_rect).collidepoint(pos):
+                            self._start_hero_drag(pos)
 
     def _update_panel_window_hover(self, panel: str, pos: tuple[int, int], state) -> None:
         window = self.panel_windows.get(panel)
@@ -787,6 +863,9 @@ class HUD:
         content = self._dialog_content_rect(panel_rect)
         if not content.collidepoint(pos):
             return False
+        if panel == "hero":
+            self._zoom_hero_tree(pos, wheel_y, panel_rect)
+            return True
         max_scroll = max(0.0, float(self._external_panel_content_height(panel, content, state) - content.height))
         if max_scroll <= 0:
             return False
@@ -808,6 +887,8 @@ class HUD:
             return slots[-1].bottom - content.top + 44 + max(1, len(state.active_item_buffs)) * 34
         if panel == "level":
             return self._level_content_height(content, state) + 42
+        if panel == "hero":
+            return content.height
         return content.height
 
     def _draw_panel_chrome(self, surface: pygame.Surface, window: PanelWindow) -> None:
@@ -949,6 +1030,8 @@ class HUD:
             self._draw_items_panel(surface, rect, state)
         elif self.active_panel == "level":
             self._draw_level_panel(surface, rect, state)
+        elif self.active_panel == "hero":
+            self._draw_hero_panel(surface, rect, state)
 
     def _active_panel_rect(self, screen_rect: pygame.Rect, viewport: pygame.Rect) -> pygame.Rect:
         if self.active_panel is None:
@@ -968,6 +1051,9 @@ class HUD:
         elif panel == "level":
             width = min(560, max(460, viewport.width - 430))
             height = min(560, viewport.height - 34)
+        elif panel == "hero":
+            width = min(840, max(560, viewport.width - 390))
+            height = min(640, viewport.height - 34)
         else:
             width = min(720, max(500, viewport.width - 390))
             height = min(560, viewport.height - 34)
@@ -1233,6 +1319,17 @@ class HUD:
                 pygame.draw.line(surface, mark, (x, body.top + tile * 0.24), (x, body.bottom - tile * 0.18), 1)
             pygame.draw.line(surface, mark, (body.left + tile * 0.20, body.centery), (body.right - tile * 0.20, body.centery), line)
             pygame.draw.circle(surface, mark, center + pygame.Vector2(tile * 0.20, 0), max(2, int(tile * 0.08)))
+        elif mode == "hero_hall":
+            pygame.draw.rect(surface, fill, body)
+            pygame.draw.rect(surface, mark, body, line)
+            ring = max(5, int(tile * 0.28))
+            pygame.draw.circle(surface, mark, center, ring, 1)
+            pygame.draw.line(surface, mark, (body.centerx, body.top + tile * 0.18), (body.centerx, body.bottom - tile * 0.18), 1)
+            pygame.draw.line(surface, mark, (body.left + tile * 0.20, body.centery), (body.right - tile * 0.20, body.centery), 1)
+            for index in range(3):
+                angle = index * math.tau / 3
+                p = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * ring
+                pygame.draw.circle(surface, mark, p, max(1, int(tile * 0.06)), 1)
         elif mode == "research":
             pygame.draw.rect(surface, fill, body)
             pygame.draw.rect(surface, mark, body, line)
@@ -1274,6 +1371,276 @@ class HUD:
         else:
             pygame.draw.rect(surface, fill, body)
             pygame.draw.rect(surface, mark, body, line)
+
+    def _draw_hero_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
+        self._reset_hero_view_if_context_changed(state)
+        self.dialog_scroll = 0.0
+        self.dialog_scroll_max = 0.0
+        troop = self._selected_hero_troop(state)
+        halls_ready = bool(self._living_hero_halls(state))
+        subtitle = "Ascension web for the selected troop." if troop is not None else "Select a troop with a hero tree."
+        self._draw_dialog_shell(surface, rect, "Hero Hall", subtitle)
+        content = self._dialog_content_rect(rect)
+        pygame.draw.rect(surface, config.PALETTE.black, content)
+        pygame.draw.rect(surface, config.PALETTE.line, content, 1)
+
+        if troop is None:
+            self._draw_hero_empty_state(surface, content, state)
+            return
+
+        tree = troop.hero_tree()
+        if tree is None:
+            self._draw_hero_empty_state(surface, content, state)
+            return
+
+        header = pygame.Rect(content.left + 14, content.top + 12, content.width - 28, 48)
+        self._draw_hero_header(surface, header, troop, halls_ready)
+        canvas = self._hero_canvas_rect(rect)
+        pygame.draw.rect(surface, config.PALETTE.black, canvas)
+        pygame.draw.rect(surface, config.PALETTE.line_bright, canvas, 1)
+
+        previous_clip = surface.get_clip()
+        surface.set_clip(canvas)
+        self._draw_hero_tree(surface, canvas, troop, tree, halls_ready)
+        surface.set_clip(previous_clip)
+
+    def _layout_hero_buttons(self, panel_rect: pygame.Rect, state) -> list[Button]:
+        self._reset_hero_view_if_context_changed(state)
+        troop = self._selected_hero_troop(state)
+        tree = troop.hero_tree() if troop is not None else None
+        if troop is None or tree is None:
+            return []
+        canvas = self._hero_canvas_rect(panel_rect)
+        halls_ready = bool(self._living_hero_halls(state))
+        buttons: list[Button] = []
+        positions = self._hero_node_positions(canvas, tree)
+        for node in tree.nodes():
+            pos = positions.get(node.node_id)
+            if pos is None:
+                continue
+            button_rect = self._hero_node_rect(pos, canvas)
+            if not button_rect.colliderect(canvas):
+                continue
+            enabled = halls_ready and not state.game_over and troop.can_purchase_hero_node(node.node_id)
+            buttons.append(Button(button_rect.clip(canvas), "", "hero_node", node.node_id, enabled=enabled, visible=False))
+        return buttons
+
+    def _draw_hero_header(self, surface: pygame.Surface, rect: pygame.Rect, troop, halls_ready: bool) -> None:
+        palette = config.PALETTE
+        pygame.draw.rect(surface, palette.panel_2, rect)
+        pygame.draw.rect(surface, palette.line_bright if halls_ready else palette.line, rect, 1)
+        self._draw_unit_glyph(surface, troop.kind, pygame.Rect(rect.left + 8, rect.top + 7, 34, 34))
+        title = f"{troop.display_name.upper()}  LVL {troop.level}"
+        surface.blit(self.fonts["small"].render(title, True, palette.text), (rect.left + 54, rect.top + 8))
+        meta = f"ORBS {troop.hero_orbs}   SPENT {troop.hero_spent_orbs()}   {'HALL ONLINE' if halls_ready else 'NEED HERO HALL'}"
+        surface.blit(self.fonts["tiny"].render(meta, True, palette.text_dim), (rect.left + 54, rect.top + 29))
+        zoom = self.fonts["tiny"].render(f"{int(self.hero_tree_zoom * 100)}%", True, palette.text_dim)
+        surface.blit(zoom, (rect.right - zoom.get_width() - 10, rect.top + 17))
+
+    def _draw_hero_empty_state(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
+        palette = config.PALETTE
+        hero_troops = [
+            troop
+            for troop in getattr(state, "troops", [])
+            if getattr(troop, "alive", False) and getattr(troop, "has_hero_tree", lambda: False)()
+        ]
+        self._section(surface, "ASCENSION", rect.left + 16, rect.top + 16)
+        entries = [
+            ("HALLS", str(len(self._living_hero_halls(state)))),
+            ("TROOPS", str(len(hero_troops))),
+            ("READY ORBS", str(sum(getattr(troop, "hero_orbs", 0) for troop in hero_troops))),
+            ("SPENT", str(sum(getattr(troop, "hero_spent_orbs", lambda: 0)() for troop in hero_troops))),
+        ]
+        self._draw_stat_grid(surface, rect.left + 16, rect.top + 48, rect.width - 32, entries)
+        y = rect.top + 164
+        for troop in hero_troops[:6]:
+            line = f"{troop.display_name.upper()}  LVL {troop.level}  ORBS {troop.hero_orbs}"
+            surface.blit(self.fonts["tiny"].render(line, True, palette.text_dim), (rect.left + 16, y))
+            y += 18
+
+    def _draw_hero_tree(self, surface: pygame.Surface, canvas: pygame.Rect, troop, tree: HeroTreeDefinition, halls_ready: bool) -> None:
+        palette = config.PALETTE
+        positions = self._hero_node_positions(canvas, tree)
+        root = self._hero_root_position(canvas)
+        phase = pygame.time.get_ticks() * 0.004
+        root_radius = max(13, int(17 * self.hero_tree_zoom))
+        pygame.draw.circle(surface, palette.black, root, root_radius)
+        pygame.draw.circle(surface, palette.white, root, root_radius, 1)
+        pygame.draw.circle(surface, palette.line_bright, root, max(3, int(root_radius * (0.55 + 0.08 * math.sin(phase)))), 1)
+
+        for branch in tree.branches:
+            previous = root
+            for node in branch.nodes:
+                current = positions[node.node_id]
+                lit = troop.hero_node_rank(node.node_id) > 0
+                available = halls_ready and troop.can_purchase_hero_node(node.node_id)
+                color = palette.white if lit else (palette.line_bright if available else palette.line)
+                width = 2 if lit else 1
+                pygame.draw.line(surface, color, previous, current, width)
+                previous = current
+
+        for branch_index, branch in enumerate(tree.branches):
+            if not branch.nodes:
+                continue
+            end = positions[branch.nodes[-1].node_id]
+            direction = self._hero_branch_direction(branch_index)
+            label_pos = end + direction * (34 * self.hero_tree_zoom)
+            label = self.fonts["tiny"].render(branch.name.upper(), True, palette.text_dim)
+            surface.blit(label, label.get_rect(center=(int(label_pos.x), int(label_pos.y))))
+            for node in branch.nodes:
+                self._draw_hero_node(surface, canvas, troop, node, positions[node.node_id], halls_ready)
+
+    def _draw_hero_node(self, surface: pygame.Surface, canvas: pygame.Rect, troop, node: HeroNodeDefinition, pos: pygame.Vector2, halls_ready: bool) -> None:
+        palette = config.PALETTE
+        rank = troop.hero_node_rank(node.node_id)
+        available = halls_ready and troop.can_purchase_hero_node(node.node_id)
+        purchased = rank > 0
+        rect = self._hero_node_rect(pos, canvas)
+        hovered = rect.collidepoint(self._mouse_pos())
+        radius = rect.width // 2 - 2
+        fill = palette.white if purchased or (hovered and available) else palette.black
+        mark = palette.black if fill == palette.white else (palette.white if available else palette.text_dim)
+        border = palette.white if purchased or available or hovered else palette.line
+
+        if available:
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.008 + node.tier)
+            pygame.draw.circle(surface, palette.line_bright, pos, radius + 5 + int(pulse * 3), 1)
+        pygame.draw.circle(surface, fill, pos, radius)
+        pygame.draw.circle(surface, border, pos, radius, 2 if purchased else 1)
+        inner = max(3, radius // 3)
+        pygame.draw.circle(surface, mark, pos, inner, 1)
+
+        center_label = f"x{rank}" if rank > 0 else str(node.tier)
+        label_image = self.fonts["tiny"].render(center_label, True, mark)
+        surface.blit(label_image, label_image.get_rect(center=(int(pos.x), int(pos.y))))
+
+        name = node.name.upper()
+        while self.fonts["tiny"].size(name)[0] > 92 and len(name) > 4:
+            name = name[:-2] + "."
+        text_color = palette.text if purchased or available else palette.text_dim
+        name_image = self.fonts["tiny"].render(name, True, text_color)
+        surface.blit(name_image, name_image.get_rect(center=(int(pos.x), int(pos.y + radius + 15))))
+
+        if hovered:
+            self.tooltip_request = TooltipRequest(self._hero_node_card(node, troop), self._mouse_pos())
+
+    def _hero_node_card(self, node: HeroNodeDefinition, troop) -> AbilityCard:
+        rank = troop.hero_node_rank(node.node_id)
+        state = f"RANK {rank}" if rank > 0 else "LOCKED"
+        details = [f"Cost {node.cost} orb", "Repeatable" if node.repeatable else "Single unlock"]
+        for effect, value in node.effects.items():
+            details.append(self._format_hero_effect(effect, value))
+        if node.ability_id:
+            details.append("Unlocks ability")
+        if node.requires and troop.hero_node_rank(node.requires) <= 0:
+            details.append("Requires previous node")
+        return AbilityCard(node.node_id, node.name, node.description, tuple(details), passive=True, state=state)
+
+    def _format_hero_effect(self, effect: str, value: float) -> str:
+        labels = {
+            "damage_multiplier": "Damage",
+            "crit_chance": "Crit chance",
+            "max_health_multiplier": "Max HP",
+            "armor": "Armor",
+            "visibility_range_multiplier": "Visibility",
+            "aggro_generation_multiplier": "Aggro",
+            "movement_speed_multiplier": "Move speed",
+            "healing_amount_multiplier": "Healing",
+            "cooldown_reduction": "Cooldown",
+            "repair_amount_multiplier": "Repair",
+            "range_multiplier": "Range",
+            "attack_speed_multiplier": "Attack speed",
+            "shield_repair_amount_multiplier": "Shield repair",
+        }
+        if effect == "chain_lightning_jumps":
+            return f"Chain jumps +{int(value)}"
+        label = labels.get(effect, effect.replace("_", " ").title())
+        if effect == "cooldown_reduction":
+            return f"{label} -{int(round(value * 100))}%"
+        return f"{label} {value * 100:+.0f}%"
+
+    def _hero_canvas_rect(self, panel_rect: pygame.Rect) -> pygame.Rect:
+        content = self._dialog_content_rect(panel_rect)
+        top = content.top + 74
+        return pygame.Rect(content.left + 12, top, content.width - 24, max(1, content.bottom - top - 12))
+
+    def _hero_root_position(self, canvas: pygame.Rect) -> pygame.Vector2:
+        return pygame.Vector2(canvas.center) + self.hero_tree_pan
+
+    def _hero_branch_direction(self, index: int) -> pygame.Vector2:
+        angle = -math.pi / 2 + index * math.tau / 3
+        return pygame.Vector2(math.cos(angle), math.sin(angle))
+
+    def _hero_node_positions(self, canvas: pygame.Rect, tree: HeroTreeDefinition) -> dict[str, pygame.Vector2]:
+        root = self._hero_root_position(canvas)
+        positions: dict[str, pygame.Vector2] = {}
+        tick = pygame.time.get_ticks() * 0.001
+        spacing = 108 * self.hero_tree_zoom
+        for branch_index, branch in enumerate(tree.branches):
+            direction = self._hero_branch_direction(branch_index)
+            tangent = pygame.Vector2(-direction.y, direction.x)
+            for node in branch.nodes:
+                seed = (sum(ord(char) for char in node.node_id) % 997) * 0.013
+                wiggle = (3.0 + node.tier * 0.8) * self.hero_tree_zoom
+                base = root + direction * (spacing * node.tier)
+                positions[node.node_id] = base + tangent * math.sin(tick * 2.2 + seed) * wiggle + direction * math.cos(tick * 1.6 + seed) * wiggle * 0.35
+        return positions
+
+    def _hero_node_rect(self, pos: pygame.Vector2, canvas: pygame.Rect) -> pygame.Rect:
+        radius = max(18, int(22 * self.hero_tree_zoom))
+        rect = pygame.Rect(0, 0, radius * 2 + 8, radius * 2 + 8)
+        rect.center = (int(pos.x), int(pos.y))
+        return rect
+
+    def _selected_hero_troop(self, state):
+        troop = getattr(state, "selected_troop", None)
+        if (
+            troop is not None
+            and len(getattr(state, "selected_troops", [troop])) == 1
+            and getattr(troop, "alive", False)
+            and getattr(troop, "has_hero_tree", lambda: False)()
+        ):
+            return troop
+        candidates = [
+            candidate
+            for candidate in getattr(state, "troops", [])
+            if getattr(candidate, "alive", False) and getattr(candidate, "has_hero_tree", lambda: False)()
+        ]
+        candidates.sort(key=lambda candidate: (getattr(candidate, "hero_orbs", 0) <= 0, -getattr(candidate, "hero_orbs", 0), getattr(candidate, "kind", "")))
+        return candidates[0] if candidates else None
+
+    def _reset_hero_view_if_context_changed(self, state, force: bool = False) -> None:
+        troop = self._selected_hero_troop(state)
+        signature = ("troop", id(troop)) if troop is not None else ("none", 0)
+        if not force and signature == self.hero_tree_context_signature:
+            return
+        self.hero_tree_context_signature = signature
+        self.hero_tree_zoom = 1.0
+        self.hero_tree_pan = pygame.Vector2(0, 0)
+        self.hero_tree_dragging = False
+
+    def _start_hero_drag(self, pos: tuple[int, int]) -> None:
+        self.hero_tree_dragging = True
+        self.hero_tree_drag_last = pygame.Vector2(pos)
+
+    def _drag_hero_tree(self, pos: tuple[int, int]) -> None:
+        current = pygame.Vector2(pos)
+        self.hero_tree_pan += current - self.hero_tree_drag_last
+        self.hero_tree_drag_last = current
+
+    def _zoom_hero_tree(self, pos: tuple[int, int], wheel_y: int, panel_rect: pygame.Rect) -> None:
+        canvas = self._hero_canvas_rect(panel_rect)
+        if not canvas.collidepoint(pos):
+            return
+        old_zoom = self.hero_tree_zoom
+        factor = 1.12 if wheel_y > 0 else 1.0 / 1.12
+        self.hero_tree_zoom = max(0.55, min(2.2, self.hero_tree_zoom * factor))
+        if math.isclose(old_zoom, self.hero_tree_zoom):
+            return
+        center = pygame.Vector2(canvas.center)
+        mouse = pygame.Vector2(pos)
+        world_from_center = mouse - center - self.hero_tree_pan
+        self.hero_tree_pan -= world_from_center * (self.hero_tree_zoom / old_zoom - 1.0)
 
     def _draw_research_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
         palette = config.PALETTE
@@ -1770,6 +2137,9 @@ class HUD:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
         elif getattr(state, "selected_training_grounds", None) is not None:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
+        elif getattr(state, "selected_hero_hall", None) is not None:
+            buttons.append(Button(pygame.Rect(x, rect.top + 176, width, 28), "OPEN HERO HALL", "open_context_panel", "hero"))
+            buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
         elif state.selected_library is not None:
             library = state.selected_library
             busy = library.active_order is not None
@@ -1797,6 +2167,8 @@ class HUD:
                 action_height += 32
             if single is not None and single.can_level_up():
                 action_height += 36
+            if single is not None and getattr(single, "has_hero_tree", lambda: False)():
+                action_height += 36
             y = max(rect.top + 192, rect.bottom - action_height - 16)
             if single is not None:
                 if single.can_level_up():
@@ -1809,6 +2181,9 @@ class HUD:
                         attr_rect = pygame.Rect(x + index * (attr_w + attr_gap), y, attr_w, 24)
                         buttons.append(Button(attr_rect, f"+ {ATTRIBUTE_SHORT_LABELS[attribute]}", "troop_attribute", attribute))
                     y += 32
+                if getattr(single, "has_hero_tree", lambda: False)():
+                    buttons.append(Button(pygame.Rect(x, y, width, 28), f"HERO TREE  {single.hero_orbs} ORB", "open_context_panel", "hero"))
+                    y += 36
             buttons.append(Button(pygame.Rect(x, y, width, 30), "STATION", "station", selected=state.station_mode))
             hold_label = "HOLD FIRE" if any(troop.attack_enabled for troop in state.selected_troops) else "ENGAGE"
             buttons.append(Button(pygame.Rect(x, y + 38, width, 30), hold_label, "toggle_attack"))
@@ -1842,6 +2217,8 @@ class HUD:
             self._draw_torch_context(surface, x, y, rect, state.selected_torch, state)
         elif getattr(state, "selected_training_grounds", None):
             self._draw_training_grounds_context(surface, x, y, rect, state.selected_training_grounds, state)
+        elif getattr(state, "selected_hero_hall", None):
+            self._draw_hero_hall_context(surface, x, y, rect, state.selected_hero_hall, state)
         elif state.selected_library:
             self._draw_library_context(surface, x, y, rect, state.selected_library, state)
         elif state.selected_research:
@@ -2056,6 +2433,29 @@ class HUD:
             ],
         )
 
+    def _draw_hero_hall_context(self, surface: pygame.Surface, x: int, y: int, rect: pygame.Rect, hall, state) -> None:
+        self._section(surface, "HERO HALL", x, y)
+        y += 26
+        hero_troops = [
+            troop
+            for troop in getattr(state, "troops", [])
+            if getattr(troop, "alive", False) and getattr(troop, "has_hero_tree", lambda: False)()
+        ]
+        ready_orbs = sum(int(getattr(troop, "hero_orbs", 0)) for troop in hero_troops)
+        spent_orbs = sum(int(getattr(troop, "hero_spent_orbs", lambda: 0)()) for troop in hero_troops)
+        self._draw_stat_grid(
+            surface,
+            x,
+            y,
+            rect.width - 32,
+            [
+                ("HP", f"{int(hall.health)}/{int(hall.max_health)}"),
+                ("TROOPS", str(len(hero_troops))),
+                ("READY ORBS", str(ready_orbs)),
+                ("SPENT", str(spent_orbs)),
+            ],
+        )
+
     def _draw_library_context(self, surface: pygame.Surface, x: int, y: int, rect: pygame.Rect, library, state) -> None:
         self._section(surface, "LIBRARY", x, y)
         y += 26
@@ -2149,6 +2549,15 @@ class HUD:
             ("CD", f"{float(stats['ability_cooldown']):0.2f}X"),
             ("MOVE", str(int(float(stats.get("movement_speed", 0.0))))),
         ]
+        if getattr(troop, "has_hero_tree", lambda: False)():
+            entries.extend(
+                [
+                    ("ORBS", str(troop.hero_orbs)),
+                    ("ASCEND", str(troop.hero_spent_orbs())),
+                    ("CRIT", f"{int(float(stats.get('crit_chance', 0.0)) * 100)}%"),
+                    ("ARMOR", f"{int(float(stats.get('damage_reduction', 0.0)) * 100)}%"),
+                ]
+            )
         if troop.harvester is not None:
             entries.extend(
                 [
@@ -2165,7 +2574,7 @@ class HUD:
             (ATTRIBUTE_SHORT_LABELS[attribute], str(troop.attribute_value(attribute)))
             for attribute in ATTRIBUTE_ORDER
         ]
-        attr_entries.append(("LEASH", str(int(troop.station_range))))
+        attr_entries.append(("LEASH", str(int(float(stats.get("station_range", troop.station_range))))))
         self._draw_stat_grid(surface, x, y, rect.width - 32, attr_entries)
         y += math.ceil(len(attr_entries) / 2) * 50 + 16
         if hasattr(troop, "abilities"):

@@ -13,14 +13,14 @@ from bastion.engine import hover_feedback
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
-from bastion.game.fog import FogOfWar, VisionSource
+from bastion.game.fog import FogOfWar, VisionProfile, VisionSource
 from bastion.game.grid import GameGrid
 from bastion.game.items import ActiveItemBuff, DroppedItem, ITEM_DEFINITIONS, Inventory, apply_item, random_drop_item_id, random_scroll_id
 from bastion.game.research import ResearchManager
 from bastion.game.resources import GoldDeposit, MineralDeposit, MineralExtractor
 from bastion.game.round_events import RoundEventManager
 from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUEPRINTS, stats_for, tower_name, xp_needed
-from bastion.game.units import Barracks, HOUSE_CAPACITY, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
+from bastion.game.units import Barracks, HOUSE_CAPACITY, HeroHall, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
 from bastion.game.waves import WaveManager
 
 
@@ -131,7 +131,7 @@ class GameState:
         self.core_target = CoreTarget(self, self.grid.townhall_cell, primary=True)
         self.core_targets: list[CoreTarget] = [self.core_target]
         self.towers: list[Tower] = []
-        self.buildings: list[Barracks | House | MineralExtractor | Torch | TrainingGrounds | ResearchBuilding | Library | ShieldGenerator] = []
+        self.buildings: list[Barracks | House | MineralExtractor | Torch | TrainingGrounds | HeroHall | ResearchBuilding | Library | ShieldGenerator] = []
         self.arcane_links: list[ArcaneLink] = []
         self.troops: list[Troop] = []
         self.enemies: list[Enemy] = []
@@ -151,6 +151,7 @@ class GameState:
         self.selected_extractor: MineralExtractor | None = None
         self.selected_torch: Torch | None = None
         self.selected_training_grounds: TrainingGrounds | None = None
+        self.selected_hero_hall: HeroHall | None = None
         self.selected_research: ResearchBuilding | None = None
         self.selected_library: Library | None = None
         self.selected_shield: ShieldGenerator | None = None
@@ -490,6 +491,8 @@ class GameState:
             self.selected_torch = None
         if self.selected_training_grounds and not self.selected_training_grounds.alive:
             self.selected_training_grounds = None
+        if self.selected_hero_hall and not self.selected_hero_hall.alive:
+            self.selected_hero_hall = None
         if self.selected_research and not self.selected_research.alive:
             self.selected_research = None
         if self.selected_library and not self.selected_library.alive:
@@ -557,7 +560,9 @@ class GameState:
                 sources.append(VisionSource(core.pos, fog.profile("core")))
         for troop in self.troops:
             if troop.alive:
-                sources.append(VisionSource(troop.pos, fog.profile(getattr(troop, "target_class", "troop"), "troop")))
+                profile = fog.profile(getattr(troop, "target_class", "troop"), "troop")
+                visibility = getattr(troop, "hero_multiplier", lambda _effect: 1.0)("visibility_range_multiplier")
+                sources.append(VisionSource(troop.pos, VisionProfile(profile.radius * visibility, profile.hardness)))
         for tower in self.towers:
             if tower.alive and self.has_arcane_power(tower):
                 sources.append(VisionSource(tower.pos, fog.profile("tower")))
@@ -654,6 +659,10 @@ class GameState:
     ) -> None:
         if source is None or amount <= 0:
             return
+        if hasattr(source, "aggro_generation_multiplier"):
+            amount *= source.aggro_generation_multiplier()
+            if amount <= 0:
+                return
         origin = pygame.Vector2(source_pos if source_pos is not None else source.pos)
         for enemy in self.nearby_enemies(origin, radius):
             if enemy.alive and hasattr(enemy, "aggro"):
@@ -1118,6 +1127,9 @@ class GameState:
             return
         if owner is not None and hasattr(owner, "abilities"):
             amount = owner.abilities.modify_outgoing_damage(enemy, amount, element, self)
+        critical = isinstance(owner, Troop) and owner.roll_critical_hit()
+        if critical:
+            amount *= owner.critical_damage_multiplier()
         actual_amount = amount * damage_multiplier(enemy, element)
         if hasattr(enemy, "damage_taken_multiplier"):
             actual_amount *= enemy.damage_taken_multiplier(owner)
@@ -1133,6 +1145,8 @@ class GameState:
             threat = actual_amount * (0.35 if quiet else 1.25)
             if isinstance(owner, Tower):
                 threat *= owner.mod_effect("aggro_multiplier", 1.0)
+            elif isinstance(owner, Troop):
+                threat *= owner.aggro_generation_multiplier()
             enemy.aggro.add_threat(owner, threat, "damage")
         killed = enemy.take_damage(actual_amount, owner)
         if effect is not None and enemy.alive:
@@ -1144,6 +1158,8 @@ class GameState:
             if hit_source is not None:
                 enemy.apply_knockback(actual_amount, hit_source)
             self.spawn_hit(enemy.pos, min(8, 2 + int(actual_amount / 12)))
+            if critical:
+                self.texts.append(FloatingText(pygame.Vector2(enemy.pos), "CRIT", 0.55))
         if owner is not None and hasattr(owner, "on_damage_dealt"):
             owner.on_damage_dealt(actual_amount, enemy, self)
         if killed:
@@ -1372,6 +1388,7 @@ class GameState:
         self.selected_extractor = None
         self.selected_torch = None
         self.selected_training_grounds = None
+        self.selected_hero_hall = None
         self.selected_research = None
         self.selected_library = None
         self.selected_shield = None
@@ -1419,6 +1436,8 @@ class GameState:
             self.selected_torch = structure
         elif isinstance(structure, TrainingGrounds):
             self.selected_training_grounds = structure
+        elif isinstance(structure, HeroHall):
+            self.selected_hero_hall = structure
         elif isinstance(structure, ResearchBuilding):
             self.selected_research = structure
         elif isinstance(structure, Library):
@@ -1433,6 +1452,7 @@ class GameState:
             or self.selected_extractor is not None
             or self.selected_torch is not None
             or self.selected_training_grounds is not None
+            or self.selected_hero_hall is not None
             or self.selected_research is not None
             or self.selected_library is not None
             or self.selected_shield is not None
@@ -1583,6 +1603,7 @@ class GameState:
             self.selected_extractor = None
             self.selected_torch = None
             self.selected_training_grounds = None
+            self.selected_hero_hall = None
             self.selected_research = None
             self.selected_library = None
             self.selected_shield = None
@@ -1613,6 +1634,7 @@ class GameState:
             self.selected_extractor = None
             self.selected_torch = None
             self.selected_training_grounds = None
+            self.selected_hero_hall = None
             self.selected_research = None
             self.selected_library = None
             self.selected_shield = None
@@ -1728,6 +1750,28 @@ class GameState:
             self.selected_training_grounds = training_grounds
             self.play_sound("menu_select")
 
+        if mode == "hero_hall":
+            if not self.can_build_on(cell):
+                self.message("BLOCKED")
+                return
+            core, path, reason = self.arcane_source_for_cell(cell)
+            if core is None:
+                self.message(reason)
+                return
+            hero_hall = HeroHall(cell, self.grid)
+            ok, reason = self.grid.try_add_tower(cell, hero_hall)
+            if not ok:
+                self.message(reason.upper())
+                return
+            self._reserve_arcane_link(hero_hall, core, path)
+            self.buildings.append(hero_hall)
+            self.gold -= cost
+            self.minerals -= mineral_cost
+            self.clear_selection()
+            self.selected_hero_hall = hero_hall
+            self.message("HERO HALL ONLINE")
+            self.play_sound("menu_select")
+
         if mode == "research":
             if not self.can_build_on(cell):
                 self.message("BLOCKED")
@@ -1837,6 +1881,15 @@ class GameState:
             self.gold += refund
             self.destroy_structure(training_grounds, quiet=True)
             self.texts.append(FloatingText(pygame.Vector2(training_grounds.pos), f"+{refund}", 0.7))
+        elif self.selected_hero_hall is not None:
+            hero_hall = self.selected_hero_hall
+            refund = int(BUILD_COSTS["hero_hall"] * 0.55)
+            self.gold += refund
+            mineral_refund = int(MINERAL_BUILD_COSTS.get("hero_hall", 0) * 0.5)
+            self.minerals += mineral_refund
+            self.destroy_structure(hero_hall, quiet=True)
+            label = f"+{refund}" if mineral_refund <= 0 else f"+{refund}/+{mineral_refund}M"
+            self.texts.append(FloatingText(pygame.Vector2(hero_hall.pos), label, 0.7))
         elif self.selected_research is not None:
             research = self.selected_research
             refund = int(BUILD_COSTS["research"] * 0.55)
@@ -1931,10 +1984,13 @@ class GameState:
     def level_up_selected_troop(self) -> None:
         if self.selected_troop is None:
             return
+        old_orbs = self.selected_troop.hero_orbs
         if self.selected_troop.level_up():
-            self.message(f"{self.selected_troop.display_name.upper()} LVL {self.selected_troop.level}")
+            gained_orb = self.selected_troop.hero_orbs > old_orbs
+            suffix = " +ORB" if gained_orb else ""
+            self.message(f"{self.selected_troop.display_name.upper()} LVL {self.selected_troop.level}{suffix}")
             self.spawn_burst(self.selected_troop.pos, 18, 72)
-            self.texts.append(FloatingText(pygame.Vector2(self.selected_troop.pos), "+2 ATTR", 0.9))
+            self.texts.append(FloatingText(pygame.Vector2(self.selected_troop.pos), "+2 ATTR" + (" +ORB" if gained_orb else ""), 0.9))
         else:
             self.message("NEED XP")
 
@@ -2135,6 +2191,40 @@ class GameState:
     def shield_generators(self) -> list[ShieldGenerator]:
         return [building for building in self.buildings if isinstance(building, ShieldGenerator) and building.alive]
 
+    def hero_halls(self) -> list[HeroHall]:
+        return [building for building in self.buildings if isinstance(building, HeroHall) and building.alive]
+
+    def purchase_hero_node_for_selected(self, node_id: str) -> bool:
+        troop = self.selected_troop if len(self.selected_troops) == 1 else None
+        if troop is None or not troop.alive or not troop.has_hero_tree():
+            self.message("SELECT TROOP")
+            return False
+        if not self.hero_halls():
+            self.message("NEED HERO HALL")
+            return False
+        tree = troop.hero_tree()
+        node = tree.node(node_id) if tree is not None else None
+        if node is None:
+            self.message("LOCKED")
+            return False
+        if troop.hero_orbs < node.cost:
+            self.message("NO ORBS")
+            return False
+        if node.max_rank is not None and troop.hero_node_rank(node.node_id) >= node.max_rank:
+            self.message("MAXED")
+            return False
+        if node.requires is not None and troop.hero_node_rank(node.requires) <= 0:
+            self.message("LOCKED")
+            return False
+        if troop.purchase_hero_node(node_id):
+            label = node.name.upper()[:18] if node is not None else "HERO NODE"
+            self.message(label)
+            self.spawn_burst(troop.pos, 14, 64)
+            self.texts.append(FloatingText(pygame.Vector2(troop.pos), "ASCEND", 0.8))
+            return True
+        self.message("LOCKED")
+        return False
+
     def connected_structure_cells(self, start: tuple[int, int]) -> set[tuple[int, int]]:
         if start not in self.grid.towers:
             return {start}
@@ -2237,6 +2327,8 @@ class GameState:
             self.spawn_hit(target.pos, 2)
             return
         actual_amount = amount * damage_multiplier(target, element)
+        if isinstance(target, Troop):
+            actual_amount = target.reduce_damage_by_armor(actual_amount)
         if actual_amount <= 0:
             return
         if not isinstance(target, Troop):
@@ -2255,6 +2347,8 @@ class GameState:
         if redirected_target is not target:
             target = redirected_target
             actual_amount = self._modify_friendly_incoming_damage(target, actual_amount, source, source_pos, element)
+            if isinstance(target, Troop):
+                actual_amount = target.reduce_damage_by_armor(actual_amount)
             if actual_amount <= 0:
                 self.spawn_hit(target.pos, 2)
                 return
@@ -2320,7 +2414,7 @@ class GameState:
         self.grid.remove_tower(structure.cell)
         if isinstance(structure, Tower) and structure in self.towers:
             self.towers.remove(structure)
-        if isinstance(structure, (Barracks, House, MineralExtractor, Torch, TrainingGrounds, ResearchBuilding, Library, ShieldGenerator)) and structure in self.buildings:
+        if isinstance(structure, (Barracks, House, MineralExtractor, Torch, TrainingGrounds, HeroHall, ResearchBuilding, Library, ShieldGenerator)) and structure in self.buildings:
             self.buildings.remove(structure)
         if self.selected_tower is structure:
             self.selected_tower = None
@@ -2334,6 +2428,8 @@ class GameState:
             self.selected_torch = None
         if self.selected_training_grounds is structure:
             self.selected_training_grounds = None
+        if self.selected_hero_hall is structure:
+            self.selected_hero_hall = None
         if self.selected_research is structure:
             self.selected_research = None
         if self.selected_library is structure:
@@ -2414,6 +2510,7 @@ class GameState:
                 or building is self.selected_extractor
                 or building is self.selected_torch
                 or building is self.selected_training_grounds
+                or building is self.selected_hero_hall
                 or building is self.selected_research
                 or building is self.selected_library
                 or building is self.selected_shield
@@ -2687,7 +2784,7 @@ class GameState:
         affordable = self.gold >= BUILD_COSTS[mode] and self.minerals >= MINERAL_BUILD_COSTS.get(mode, 0)
         valid = (self.can_build_extractor_on(preview_cell) if mode == "extractor" else self.can_build_on(preview_cell)) and affordable
         preview_path: list[tuple[int, int]] = []
-        structure_modes = ("barracks", "house", "extractor", "torch", "training_grounds", "research", "library", "shield_generator")
+        structure_modes = ("barracks", "house", "extractor", "torch", "training_grounds", "hero_hall", "research", "library", "shield_generator")
         if valid and (mode == "wall" or mode == "core" or mode in TOWER_BLUEPRINTS or mode in structure_modes):
             blocker = "wall" if mode == "wall" else "tower"
             valid = self.grid.would_keep_paths_open(preview_cell, blocker)

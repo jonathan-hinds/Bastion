@@ -1,0 +1,571 @@
+{
+  "schema": 1,
+  "orb_interval_levels": 3,
+  "trees": {
+    "warrior": {
+      "branches": [
+        {
+          "id": "warmonger",
+          "name": "Warmonger",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "crit",
+              "name": "Notch 2",
+              "description": "+5% crit chance.",
+              "repeatable": true,
+              "effects": {
+                "crit_chance": 0.05
+              }
+            },
+            {
+              "id": "bloodied_fury",
+              "name": "Bloodied Fury",
+              "description": "Deals more damage as health is missing.",
+              "ability_id": "catalog_bloodied_fury"
+            }
+          ]
+        },
+        {
+          "id": "savior",
+          "name": "Savior",
+          "nodes": [
+            {
+              "id": "max_hp",
+              "name": "Notch 1",
+              "description": "+10% max HP.",
+              "repeatable": true,
+              "effects": {
+                "max_health_multiplier": 0.1
+              }
+            },
+            {
+              "id": "armor",
+              "name": "Notch 2",
+              "description": "+10 armor rating.",
+              "repeatable": true,
+              "effects": {
+                "armor": 0.1
+              }
+            },
+            {
+              "id": "guardian_intercept",
+              "name": "Guardian Intercept",
+              "description": "Redirects fatal ally damage to this unit.",
+              "ability_id": "catalog_guardian_intercept"
+            }
+          ]
+        },
+        {
+          "id": "juggernaut",
+          "name": "Juggernaut",
+          "nodes": [
+            {
+              "id": "hp_damage",
+              "name": "Notch 1",
+              "description": "+5% max HP and +5% damage.",
+              "repeatable": true,
+              "effects": {
+                "max_health_multiplier": 0.05,
+                "damage_multiplier": 0.05
+              }
+            },
+            {
+              "id": "visibility",
+              "name": "Notch 2",
+              "description": "+10% visibility range.",
+              "repeatable": true,
+              "effects": {
+                "visibility_range_multiplier": 0.1
+              }
+            },
+            {
+              "id": "perfect_guard",
+              "name": "Perfect Guard",
+              "description": "Blocks incoming damage during a guard window.",
+              "ability_id": "catalog_damage_block"
+            }
+          ]
+        }
+      ]
+    },
+    "archer": {
+      "branches": [
+        {
+          "id": "marksman_expert",
+          "name": "Marksman Expert",
+          "nodes": [
+            {
+              "id": "crit",
+              "name": "Notch 1",
+              "description": "+5% crit chance.",
+              "repeatable": true,
+              "effects": {
+                "crit_chance": 0.05
+              }
+            },
+            {
+              "id": "damage",
+              "name": "Notch 2",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "hunters_mark",
+              "name": "Hunter's Mark",
+              "description": "Marks enemies in a forward cone.",
+              "ability_id": "catalog_vision_mark"
+            }
+          ]
+        },
+        {
+          "id": "survivalist",
+          "name": "Survivalist",
+          "nodes": [
+            {
+              "id": "max_hp",
+              "name": "Notch 1",
+              "description": "+10% max HP.",
+              "repeatable": true,
+              "effects": {
+                "max_health_multiplier": 0.1
+              }
+            },
+            {
+              "id": "aggro",
+              "name": "Notch 2",
+              "description": "-5% aggro generation.",
+              "repeatable": true,
+              "effects": {
+                "aggro_generation_multiplier": -0.05
+              }
+            },
+            {
+              "id": "field_recovery",
+              "name": "Field Recovery",
+              "description": "Regenerates health while out of combat.",
+              "ability_id": "catalog_out_of_combat_regeneration"
+            }
+          ]
+        },
+        {
+          "id": "siege_marksman",
+          "name": "Siege Marksman",
+          "nodes": [
+            {
+              "id": "move_speed",
+              "name": "Notch 1",
+              "description": "+10% movement speed.",
+              "repeatable": true,
+              "effects": {
+                "movement_speed_multiplier": 0.1
+              }
+            },
+            {
+              "id": "armor",
+              "name": "Notch 2",
+              "description": "+5 armor rating.",
+              "repeatable": true,
+              "effects": {
+                "armor": 0.05
+              }
+            },
+            {
+              "id": "multishot",
+              "name": "Multishot",
+              "description": "Fires at several enemies in range.",
+              "ability_id": "archer_multi_shot"
+            }
+          ]
+        }
+      ]
+    },
+    "cleric": {
+      "branches": [
+        {
+          "id": "paladin",
+          "name": "Paladin",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "armor",
+              "name": "Notch 2",
+              "description": "+5 armor rating.",
+              "repeatable": true,
+              "effects": {
+                "armor": 0.05
+              }
+            },
+            {
+              "id": "consecration",
+              "name": "Consecration",
+              "description": "Creates holy ground that damages and heals.",
+              "ability_id": "catalog_consecration"
+            }
+          ]
+        },
+        {
+          "id": "sage",
+          "name": "Sage",
+          "nodes": [
+            {
+              "id": "healing",
+              "name": "Notch 1",
+              "description": "+10% healing amount.",
+              "repeatable": true,
+              "effects": {
+                "healing_amount_multiplier": 0.1
+              }
+            },
+            {
+              "id": "cooldown",
+              "name": "Notch 2",
+              "description": "+5% cooldown reduction.",
+              "repeatable": true,
+              "effects": {
+                "cooldown_reduction": 0.05
+              }
+            },
+            {
+              "id": "holy_aura",
+              "name": "Holy Aura",
+              "description": "Heals nearby allies over time.",
+              "ability_id": "catalog_holy_aura"
+            }
+          ]
+        },
+        {
+          "id": "zealot",
+          "name": "Zealot",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "crit",
+              "name": "Notch 2",
+              "description": "+5% crit chance.",
+              "repeatable": true,
+              "effects": {
+                "crit_chance": 0.05
+              }
+            },
+            {
+              "id": "inner_fire",
+              "name": "Inner Fire",
+              "description": "Burns enemies that strike this unit.",
+              "ability_id": "catalog_inner_fire"
+            }
+          ]
+        }
+      ]
+    },
+    "engineer": {
+      "branches": [
+        {
+          "id": "mechanic",
+          "name": "Mechanic",
+          "nodes": [
+            {
+              "id": "repair",
+              "name": "Notch 1",
+              "description": "+10% repair amount.",
+              "repeatable": true,
+              "effects": {
+                "repair_amount_multiplier": 0.1
+              }
+            },
+            {
+              "id": "cooldown",
+              "name": "Notch 2",
+              "description": "+5% cooldown reduction.",
+              "repeatable": true,
+              "effects": {
+                "cooldown_reduction": 0.05
+              }
+            },
+            {
+              "id": "vanish",
+              "name": "Vanish",
+              "description": "Drops enemy aggro when threat gets high.",
+              "ability_id": "catalog_vanish"
+            }
+          ]
+        },
+        {
+          "id": "war_machine",
+          "name": "War Machine",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "max_hp",
+              "name": "Notch 2",
+              "description": "+10% max HP.",
+              "repeatable": true,
+              "effects": {
+                "max_health_multiplier": 0.1
+              }
+            },
+            {
+              "id": "war_machine",
+              "name": "War Machine",
+              "description": "Transforms into a rapid-fire platform.",
+              "ability_id": "catalog_war_machine"
+            }
+          ]
+        },
+        {
+          "id": "field_expert",
+          "name": "Field Expert",
+          "nodes": [
+            {
+              "id": "hp",
+              "name": "Notch 1",
+              "description": "+10% max HP.",
+              "repeatable": true,
+              "effects": {
+                "max_health_multiplier": 0.1
+              }
+            },
+            {
+              "id": "aggro",
+              "name": "Notch 2",
+              "description": "-5% aggro generation.",
+              "repeatable": true,
+              "effects": {
+                "aggro_generation_multiplier": -0.05
+              }
+            },
+            {
+              "id": "quiet_casting",
+              "name": "Quiet Casting",
+              "description": "Using abilities bleeds off enemy aggro.",
+              "ability_id": "catalog_aggro_fade"
+            }
+          ]
+        }
+      ]
+    },
+    "wizard": {
+      "branches": [
+        {
+          "id": "lightning",
+          "name": "Lightning",
+          "nodes": [
+            {
+              "id": "range",
+              "name": "Notch 1",
+              "description": "+10% range.",
+              "repeatable": true,
+              "effects": {
+                "range_multiplier": 0.1
+              }
+            },
+            {
+              "id": "chain_arc",
+              "name": "Notch 2",
+              "description": "+1 chain lightning jump.",
+              "repeatable": true,
+              "effects": {
+                "chain_lightning_jumps": 1
+              }
+            },
+            {
+              "id": "static_jolt",
+              "name": "Static Jolt",
+              "description": "Stuns nearby enemies when struck.",
+              "ability_id": "catalog_electric_jolt"
+            }
+          ]
+        },
+        {
+          "id": "freeze",
+          "name": "Freeze",
+          "nodes": [
+            {
+              "id": "attack_speed",
+              "name": "Notch 1",
+              "description": "+10% attack speed.",
+              "repeatable": true,
+              "effects": {
+                "attack_speed_multiplier": 0.1
+              }
+            },
+            {
+              "id": "damage",
+              "name": "Notch 2",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "frost_nova",
+              "name": "Frost Nova",
+              "description": "Freezes and pushes close enemies.",
+              "ability_id": "catalog_frost_nova"
+            }
+          ]
+        },
+        {
+          "id": "fire",
+          "name": "Fire",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "crit",
+              "name": "Notch 2",
+              "description": "+5% crit chance.",
+              "repeatable": true,
+              "effects": {
+                "crit_chance": 0.05
+              }
+            },
+            {
+              "id": "dragon_breath",
+              "name": "Dragon Breath",
+              "description": "Exhales a damaging fire cone.",
+              "ability_id": "catalog_dragon_breath"
+            }
+          ]
+        }
+      ]
+    },
+    "rune_mage": {
+      "branches": [
+        {
+          "id": "ice_rune",
+          "name": "Ice Rune",
+          "nodes": [
+            {
+              "id": "attack_speed",
+              "name": "Notch 1",
+              "description": "+10% attack speed.",
+              "repeatable": true,
+              "effects": {
+                "attack_speed_multiplier": 0.1
+              }
+            },
+            {
+              "id": "range",
+              "name": "Notch 2",
+              "description": "+5% range.",
+              "repeatable": true,
+              "effects": {
+                "range_multiplier": 0.05
+              }
+            },
+            {
+              "id": "slowing_presence",
+              "name": "Slowing Presence",
+              "description": "Slows enemies inside attack range.",
+              "ability_id": "catalog_slowing_presence"
+            }
+          ]
+        },
+        {
+          "id": "dark_rune",
+          "name": "Dark Rune",
+          "nodes": [
+            {
+              "id": "damage",
+              "name": "Notch 1",
+              "description": "+10% damage.",
+              "repeatable": true,
+              "effects": {
+                "damage_multiplier": 0.1
+              }
+            },
+            {
+              "id": "move_speed",
+              "name": "Notch 2",
+              "description": "+10% movement speed.",
+              "repeatable": true,
+              "effects": {
+                "movement_speed_multiplier": 0.1
+              }
+            },
+            {
+              "id": "siphon_life",
+              "name": "Siphon Life",
+              "description": "Drains nearby enemies and heals this unit.",
+              "ability_id": "catalog_siphon_life"
+            }
+          ]
+        },
+        {
+          "id": "arcane_rune",
+          "name": "Arcane Rune",
+          "nodes": [
+            {
+              "id": "shield_repair",
+              "name": "Notch 1",
+              "description": "+10% shield repair amount.",
+              "repeatable": true,
+              "effects": {
+                "shield_repair_amount_multiplier": 0.1
+              }
+            },
+            {
+              "id": "cooldown",
+              "name": "Notch 2",
+              "description": "+5% cooldown reduction.",
+              "repeatable": true,
+              "effects": {
+                "cooldown_reduction": 0.05
+              }
+            },
+            {
+              "id": "arcane_focus",
+              "name": "Arcane Focus",
+              "description": "Channels a beam that ramps damage.",
+              "ability_id": "catalog_arcane_focus"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -22,9 +22,12 @@ from bastion.game.abilities import (
     VisionMarkConeAbility,
     WarMachineAbility,
     catalog_ability_definitions,
+    configure_troop_abilities,
 )
 from bastion.game.aggro import AggroComponent, melee_aggro_profile
+from bastion.game.hero_trees import HERO_ORB_LEVEL_INTERVAL, HERO_TREES
 from bastion.game.state import GameState
+from bastion.game.tower_defs import xp_needed
 from bastion.game.units import Troop, troop_ability_cards
 
 
@@ -336,6 +339,76 @@ class CatalogAbilityTests(unittest.TestCase):
         owner.abilities.add(slow)
         slow.update(0.22, game)
         self.assertLess(enemy.slow_multiplier, 1.0)
+
+
+class HeroTreeTests(unittest.TestCase):
+    def test_hero_tree_data_covers_combat_troops(self):
+        expected = {"warrior", "archer", "cleric", "engineer", "wizard", "rune_mage"}
+        self.assertEqual(set(HERO_TREES), expected)
+        self.assertEqual(HERO_ORB_LEVEL_INTERVAL, 3)
+        self.assertNotIn("grunt", HERO_TREES)
+        valid_ability_ids = {definition.ability_id for definition in catalog_ability_definitions().values()}
+        valid_ability_ids.add("archer_multi_shot")
+        for tree in HERO_TREES.values():
+            self.assertEqual(len(tree.branches), 3)
+            for branch in tree.branches:
+                self.assertEqual(len(branch.nodes), 3)
+                self.assertTrue(branch.nodes[0].repeatable)
+                self.assertTrue(branch.nodes[1].repeatable)
+                self.assertFalse(branch.nodes[2].repeatable)
+                self.assertIn(branch.nodes[2].ability_id, valid_ability_ids)
+
+    def test_orbs_unlock_repeatable_chained_nodes(self):
+        unit = Troop("warrior", pygame.Vector2(0, 0), pygame.Vector2(0, 0))
+        tree = HERO_TREES["warrior"]
+        node_1 = tree.branches[0].nodes[0]
+        node_2 = tree.branches[0].nodes[1]
+
+        unit.xp = xp_needed(unit.level)
+        self.assertTrue(unit.level_up())
+        self.assertEqual(unit.level, 2)
+        self.assertEqual(unit.hero_orbs, 0)
+
+        unit.xp = xp_needed(unit.level)
+        self.assertTrue(unit.level_up())
+        self.assertEqual(unit.level, 3)
+        self.assertEqual(unit.hero_orbs, 1)
+
+        self.assertFalse(unit.can_purchase_hero_node(node_2.node_id))
+        self.assertTrue(unit.purchase_hero_node(node_1.node_id))
+        self.assertEqual(unit.hero_orbs, 0)
+        self.assertEqual(unit.hero_node_rank(node_1.node_id), 1)
+
+        unit.hero_orbs = 2
+        self.assertTrue(unit.purchase_hero_node(node_1.node_id))
+        self.assertTrue(unit.purchase_hero_node(node_2.node_id))
+        self.assertEqual(unit.hero_node_rank(node_1.node_id), 2)
+        self.assertEqual(unit.hero_node_rank(node_2.node_id), 1)
+
+    def test_archer_multishot_starts_locked_behind_hero_tree(self):
+        unit = Troop("archer", pygame.Vector2(0, 0), pygame.Vector2(0, 0))
+        cards = unit.abilities.cards()
+        self.assertIn("Single Shot", {card.name for card in cards})
+        self.assertNotIn("Multi Shot", {card.name for card in cards})
+
+        siege = HERO_TREES["archer"].branches[2]
+        for node in siege.nodes:
+            unit.hero_node_ranks[node.node_id] = 1
+        configure_troop_abilities(unit)
+
+        cards = unit.abilities.cards()
+        self.assertIn("Multi Shot", {card.name for card in cards})
+        self.assertNotIn("Single Shot", {card.name for card in cards})
+
+    def test_armor_reduces_incoming_troop_damage(self):
+        unit = Troop("warrior", pygame.Vector2(0, 0), pygame.Vector2(0, 0))
+        armor_node = HERO_TREES["warrior"].branches[1].nodes[1]
+        unit.hero_node_ranks[armor_node.node_id] = 1
+
+        reduced = unit.reduce_damage_by_armor(100.0)
+
+        self.assertLess(reduced, 100.0)
+        self.assertGreater(reduced, 85.0)
 
 
 if __name__ == "__main__":

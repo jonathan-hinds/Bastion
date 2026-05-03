@@ -25,6 +25,7 @@ BUILD_COSTS = {
     "extractor": 24,
     "torch": 32,
     "training_grounds": 46,
+    "hero_hall": 54,
     "research": 42,
     "library": 44,
     "shield_generator": 52,
@@ -36,6 +37,7 @@ MINERAL_BUILD_COSTS = {
     "cannon": 18,
     "wizard": 26,
     "extractor": 8,
+    "hero_hall": 18,
     "shield_generator": 30,
     "core": 42,
 }

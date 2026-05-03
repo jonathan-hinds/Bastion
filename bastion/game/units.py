@@ -12,6 +12,7 @@ from bastion.engine import hover_feedback
 from bastion.game.abilities import AbilitySystemComponent, ItemPassiveAbility, ItemThreatAuraPassive, configure_troop_abilities
 from bastion.game.combat import MeleeAttackController
 from bastion.game.entities import FloatingText
+from bastion.game.hero_trees import HERO_ORB_LEVEL_INTERVAL, node_for_troop, tree_for_troop, troop_has_tree
 from bastion.game.items import ActiveItemBuff, ITEM_DEFINITIONS, Inventory, InventorySlot
 from bastion.game.navigation import PathNavigator
 from bastion.game.research import RESEARCH_DEFINITIONS, ResearchOrder
@@ -219,6 +220,18 @@ class TroopAbilityPreview:
         self.melee = MeleeAttackController(self)
         self.abilities = AbilitySystemComponent(self)
         configure_troop_abilities(self)
+
+    def hero_effect_total(self, _effect: str) -> float:
+        return 0.0
+
+    def hero_multiplier(self, _effect: str) -> float:
+        return 1.0
+
+    def hero_unlocked_ability_ids(self) -> tuple[str, ...]:
+        return ()
+
+    def has_hero_ability(self, _ability_id: str) -> bool:
+        return False
 
     def stats(self, game=None) -> dict[str, float]:
         melee_damage = melee_damage_from_strength(self.attributes.strength)
@@ -546,6 +559,59 @@ class TrainingGrounds:
         fill = bar.copy()
         fill.width = int(bar.width * max(0.0, self.health / self.max_health))
         pygame.draw.rect(surface, config.PALETTE.white, fill)
+
+
+class HeroHall:
+    kind = "hero_hall"
+    display_name = "Hero Hall"
+    target_class = "structure"
+    radius = config.TILE_SIZE * 0.55
+    max_health = 260.0
+
+    def __init__(self, cell: tuple[int, int], grid) -> None:
+        self.cell = cell
+        self.pos = grid.world_center(cell)
+        self.health = self.max_health
+        self.alive = True
+        self.pulse = random.random() * math.tau
+
+    def update(self, dt: float, game) -> None:
+        return
+
+    def take_damage(self, amount: float) -> bool:
+        if not self.alive:
+            return False
+        self.health -= amount
+        return self.health <= 0
+
+    def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
+        center = camera.world_to_screen(self.pos, viewport)
+        size = int(config.TILE_SIZE * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = center
+        fill, mark = hover_feedback.inverted_pair(hovered)
+        pygame.draw.rect(surface, fill, rect)
+        pygame.draw.rect(surface, mark, rect, max(1, int(2 * camera.zoom)))
+
+        ring = max(5, int(size * 0.30))
+        pygame.draw.circle(surface, mark, center, ring, max(1, int(camera.zoom)))
+        pygame.draw.line(surface, mark, (rect.centerx, rect.top + size * 0.18), (rect.centerx, rect.bottom - size * 0.18), max(1, int(camera.zoom)))
+        pygame.draw.line(surface, mark, (rect.left + size * 0.20, rect.centery), (rect.right - size * 0.20, rect.centery), max(1, int(camera.zoom)))
+        phase = pygame.time.get_ticks() * 0.005 + self.pulse
+        for index in range(3):
+            angle = phase + index * math.tau / 3
+            orb = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * ring
+            pygame.draw.circle(surface, mark, orb, max(2, int(2.6 * camera.zoom)), max(1, int(camera.zoom)))
+
+        if selected:
+            draw_circle_alpha(surface, center, size * 0.76, config.PALETTE.white, 58, 1)
+
+        if self.health < self.max_health:
+            bar = pygame.Rect(rect.left, rect.top - 6, rect.width, 3)
+            pygame.draw.rect(surface, config.PALETTE.black, bar)
+            fill_rect = bar.copy()
+            fill_rect.width = int(bar.width * max(0.0, self.health / self.max_health))
+            pygame.draw.rect(surface, config.PALETTE.white, fill_rect)
 
 
 class ResearchBuilding:
@@ -932,6 +998,8 @@ class Troop:
         self.vel = pygame.Vector2(0, 0)
         self.level = 1
         self.xp = 0
+        self.hero_orbs = 0
+        self.hero_node_ranks: dict[str, int] = {}
         self.kills = 0
         self.cooldown = random.uniform(0.0, 0.35)
         self.target = None
@@ -958,19 +1026,24 @@ class Troop:
 
     def stats(self, game=None) -> dict[str, float]:
         attributes = self.effective_attributes()
-        melee_damage = melee_damage_from_strength(attributes.strength)
-        magic_damage = magic_damage_from_intellect(attributes.intellect)
+        damage_multiplier = self.hero_multiplier("damage_multiplier")
+        melee_damage = melee_damage_from_strength(attributes.strength) * damage_multiplier
+        magic_damage = magic_damage_from_intellect(attributes.intellect) * damage_multiplier
         damage = magic_damage if self.attack_stat == "intellect" else melee_damage
-        fire_rate = attack_speed_from_agility(attributes.agility)
-        movement_speed = self.speed * self.passive_multiplier("movement_speed_multiplier")
+        fire_rate = attack_speed_from_agility(attributes.agility) * self.hero_multiplier("attack_speed_multiplier")
+        movement_speed = self.speed * self.passive_multiplier("movement_speed_multiplier") * self.hero_multiplier("movement_speed_multiplier")
         stats = {
-            "range": self.base_range,
+            "range": self.base_range * self.hero_multiplier("range_multiplier"),
             "damage": damage,
             "melee_damage": melee_damage,
             "magic_damage": magic_damage,
             "fire_rate": fire_rate,
             "ability_cooldown": self.ability_cooldown_multiplier(),
             "movement_speed": movement_speed,
+            "crit_chance": self.crit_chance(),
+            "armor": self.armor_rating(),
+            "damage_reduction": self.armor_damage_reduction(),
+            "station_range": self.effective_station_range(),
         }
         if game is not None and hasattr(game, "item_multiplier"):
             stats["damage"] *= game.item_multiplier("troop_damage_multiplier")
@@ -979,7 +1052,98 @@ class Troop:
         return stats
 
     def ability_cooldown_multiplier(self) -> float:
-        return cooldown_multiplier_from_cunning(self.effective_attributes().cunning)
+        hero_reduction = self.hero_effect_total("cooldown_reduction")
+        return max(0.05, cooldown_multiplier_from_cunning(self.effective_attributes().cunning) * max(0.05, 1.0 - hero_reduction))
+
+    def hero_tree(self):
+        return tree_for_troop(self.kind)
+
+    def has_hero_tree(self) -> bool:
+        return troop_has_tree(self.kind)
+
+    def hero_node_rank(self, node_id: str) -> int:
+        return max(0, int(self.hero_node_ranks.get(node_id, 0)))
+
+    def hero_spent_orbs(self) -> int:
+        return sum(max(0, int(rank)) for rank in self.hero_node_ranks.values())
+
+    def hero_effect_total(self, effect: str) -> float:
+        tree = self.hero_tree()
+        if tree is None:
+            return 0.0
+        total = 0.0
+        for node in tree.nodes():
+            rank = self.hero_node_rank(node.node_id)
+            if rank > 0:
+                total += float(node.effects.get(effect, 0.0)) * rank
+        return total
+
+    def hero_multiplier(self, effect: str) -> float:
+        value = 1.0 + self.hero_effect_total(effect)
+        if effect == "aggro_generation_multiplier":
+            return max(0.0, value)
+        return max(0.05, value)
+
+    def hero_unlocked_ability_ids(self) -> tuple[str, ...]:
+        tree = self.hero_tree()
+        if tree is None:
+            return ()
+        ability_ids: list[str] = []
+        for node in tree.nodes():
+            if node.ability_id and self.hero_node_rank(node.node_id) > 0:
+                ability_ids.append(node.ability_id)
+        return tuple(ability_ids)
+
+    def has_hero_ability(self, ability_id: str) -> bool:
+        return ability_id in self.hero_unlocked_ability_ids()
+
+    def can_purchase_hero_node(self, node_id: str) -> bool:
+        node = node_for_troop(self.kind, node_id)
+        if node is None or self.hero_orbs < node.cost:
+            return False
+        rank = self.hero_node_rank(node.node_id)
+        if node.max_rank is not None and rank >= node.max_rank:
+            return False
+        if node.requires is not None and self.hero_node_rank(node.requires) <= 0:
+            return False
+        return True
+
+    def purchase_hero_node(self, node_id: str) -> bool:
+        node = node_for_troop(self.kind, node_id)
+        if node is None or not self.can_purchase_hero_node(node.node_id):
+            return False
+        old_max = self.max_health
+        self.hero_orbs -= node.cost
+        self.hero_node_ranks[node.node_id] = self.hero_node_rank(node.node_id) + 1
+        configure_troop_abilities(self)
+        self._refresh_derived_stats(old_max)
+        return True
+
+    def crit_chance(self) -> float:
+        return max(0.0, self.hero_effect_total("crit_chance"))
+
+    def critical_damage_multiplier(self) -> float:
+        return 2.0 + max(0.0, self.crit_chance() - 1.0)
+
+    def roll_critical_hit(self) -> bool:
+        chance = self.crit_chance()
+        return chance > 0.0 and (chance >= 1.0 or random.random() < chance)
+
+    def armor_rating(self) -> float:
+        return max(0.0, self.hero_effect_total("armor"))
+
+    def armor_damage_reduction(self) -> float:
+        armor = self.armor_rating()
+        return armor / (1.0 + armor) if armor > 0 else 0.0
+
+    def reduce_damage_by_armor(self, amount: float) -> float:
+        return max(0.0, amount * (1.0 - self.armor_damage_reduction()))
+
+    def aggro_generation_multiplier(self) -> float:
+        return self.hero_multiplier("aggro_generation_multiplier")
+
+    def effective_station_range(self) -> float:
+        return self.station_range * self.hero_multiplier("visibility_range_multiplier")
 
     def attribute_value(self, attribute: str) -> int:
         if attribute not in ATTRIBUTE_ORDER:
@@ -1065,7 +1229,7 @@ class Troop:
         stamina = self.effective_attributes().stamina
         base = max_health_from_stamina(stamina)
         bonus_per_stamina = self.passive_value("max_health_per_stamina_bonus", 0.0)
-        return max(1.0, base + stamina * bonus_per_stamina)
+        return max(1.0, (base + stamina * bonus_per_stamina) * self.hero_multiplier("max_health_multiplier"))
 
     def add_xp(self, amount: int) -> bool:
         was_ready = self.can_level_up()
@@ -1083,6 +1247,8 @@ class Troop:
         self.xp -= cost
         self.level += 1
         self.attribute_points += 2
+        if self.has_hero_tree() and self.level % HERO_ORB_LEVEL_INTERVAL == 0:
+            self.hero_orbs += 1
         return True
 
     def allocate_attribute(self, attribute: str) -> bool:
@@ -1295,18 +1461,19 @@ class Troop:
         if not self.abilities.has_target_priority() and self.target and self.target.alive and self._enemy_inside_station(self.target):
             return self.target
 
-        enemies = game.targetable_enemies_near(self.station, self.station_range + 36) if hasattr(game, "targetable_enemies_near") else game.nearby_enemies(self.station, self.station_range + 36) if hasattr(game, "nearby_enemies") else game.enemies
+        station_range = self.effective_station_range()
+        enemies = game.targetable_enemies_near(self.station, station_range + 36) if hasattr(game, "targetable_enemies_near") else game.nearby_enemies(self.station, station_range + 36) if hasattr(game, "nearby_enemies") else game.enemies
         candidates = [
             enemy
             for enemy in enemies
-            if enemy.alive and self._enemy_inside_station(enemy) and enemy.pos.distance_to(self.pos) <= self.station_range
+            if enemy.alive and self._enemy_inside_station(enemy) and enemy.pos.distance_to(self.pos) <= station_range
         ]
         if not candidates:
             return None
         return min(candidates, key=lambda enemy: self.abilities.target_priority_key(enemy, (enemy.pos.distance_to(self.pos),)))
 
     def _enemy_inside_station(self, enemy) -> bool:
-        return enemy.pos.distance_to(self.station) <= self.station_range + enemy.radius
+        return enemy.pos.distance_to(self.station) <= self.effective_station_range() + enemy.radius
 
     def _attack(self, game, stats: dict[str, float]) -> None:
         if self.target is None:
@@ -1327,7 +1494,7 @@ class Troop:
         neighbors = None
         if separation_strength > 0:
             neighbors = (lambda: game.nearby_troops(self.pos, 52)) if hasattr(game, "nearby_troops") else game.troops
-        move_speed = self.speed * self.passive_multiplier("movement_speed_multiplier")
+        move_speed = self.speed * self.passive_multiplier("movement_speed_multiplier") * self.hero_multiplier("movement_speed_multiplier")
         self.navigator.steer_to(
             target,
             dt,
@@ -1361,7 +1528,7 @@ class Troop:
 
     def draw_station(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         station = camera.world_to_screen(self.station, viewport)
-        draw_circle_alpha(surface, station, self.station_range * camera.zoom, config.PALETTE.white, 24, 1)
+        draw_circle_alpha(surface, station, self.effective_station_range() * camera.zoom, config.PALETTE.white, 24, 1)
         pos = camera.world_to_screen(self.pos, viewport)
         draw_line_alpha(surface, pos, station, config.PALETTE.white, 50, 1)
 

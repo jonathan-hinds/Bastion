@@ -713,6 +713,15 @@ class ChainLightningAbility(GameplayAbility):
         self.jumps = jumps
         self.chain_radius = chain_radius
 
+    def effective_radius(self, game=None) -> float:
+        return max(self.radius, _owner_range(self.owner, game, self.radius))
+
+    def effective_jumps(self) -> int:
+        bonus = 0
+        if hasattr(self.owner, "hero_effect_total"):
+            bonus = int(self.owner.hero_effect_total("chain_lightning_jumps"))
+        return max(1, self.jumps + bonus)
+
     def should_auto_activate(self, game) -> bool:
         if not getattr(self.owner, "attack_enabled", True):
             return False
@@ -721,12 +730,13 @@ class ChainLightningAbility(GameplayAbility):
     def _find_target(self, game):
         if not self.owner.alive or not getattr(self.owner, "attack_enabled", True):
             return None
-        enemies = game.targetable_enemies_near(self.owner.pos, self.radius + 24) if hasattr(game, "targetable_enemies_near") else game.nearby_enemies(self.owner.pos, self.radius + 24) if hasattr(game, "nearby_enemies") else game.enemies
+        radius = self.effective_radius(game)
+        enemies = game.targetable_enemies_near(self.owner.pos, radius + 24) if hasattr(game, "targetable_enemies_near") else game.nearby_enemies(self.owner.pos, radius + 24) if hasattr(game, "nearby_enemies") else game.enemies
         candidates = [
             enemy
             for enemy in enemies
             if enemy.alive
-            and enemy.pos.distance_to(self.owner.pos) <= self.radius + enemy.radius
+            and enemy.pos.distance_to(self.owner.pos) <= radius + enemy.radius
             and self.owner._enemy_inside_station(enemy)
         ]
         if not candidates:
@@ -749,7 +759,7 @@ class ChainLightningAbility(GameplayAbility):
             target,
             self.effective_damage(game),
             self.owner,
-            jumps=self.jumps,
+            jumps=self.effective_jumps(),
             radius=self.chain_radius,
             falloff=0.68,
             stun=0.18,
@@ -764,7 +774,7 @@ class ChainLightningAbility(GameplayAbility):
     def detail_lines(self, game=None) -> list[str]:
         return [
             f"Damage {_format_number(self.effective_damage(game))} lightning",
-            f"Jumps {self.jumps}",
+            f"Jumps {self.effective_jumps()}",
             f"Arc {int(self.chain_radius)}",
             f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
         ]
@@ -772,7 +782,7 @@ class ChainLightningAbility(GameplayAbility):
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
         alpha = 30 if self.ready else 12
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, alpha, 1)
+        draw_circle_alpha(surface, screen, self.effective_radius(None) * camera.zoom, config.PALETTE.white, alpha, 1)
 
 
 class SupportOverTimeAbility(GameplayAbility):
@@ -789,6 +799,17 @@ class SupportOverTimeAbility(GameplayAbility):
         self.target = None
         self.fx_timer = 0.0
         self.xp_bank = 0.0
+
+    def effective_rate(self, game=None) -> float:
+        value = self.rate
+        key = {
+            "heal": "healing_amount_multiplier",
+            "repair": "repair_amount_multiplier",
+            "shield": "shield_repair_amount_multiplier",
+        }.get(self.reason)
+        if key is not None and hasattr(self.owner, "hero_multiplier"):
+            value *= self.owner.hero_multiplier(key)
+        return value
 
     def update(self, dt: float, game) -> None:
         self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
@@ -808,9 +829,9 @@ class SupportOverTimeAbility(GameplayAbility):
             if self.tick_timer > 0:
                 return
             self.tick_timer = interval
-            amount = self.rate * self.tick_interval
+            amount = self.effective_rate(game) * self.tick_interval
         else:
-            amount = self.rate * dt
+            amount = self.effective_rate(game) * dt
 
         actual = game.restore_friendly(target, amount, self.owner, self.reason, element=self.element)
         if actual <= 0:
@@ -846,7 +867,7 @@ class SupportOverTimeAbility(GameplayAbility):
 
     def detail_lines(self, game=None) -> list[str]:
         lines = [
-            f"Rate {_format_number(self.rate)}/s",
+            f"Rate {_format_number(self.effective_rate(game))}/s",
             f"Radius {int(self.radius)}",
         ]
         interval = self.effective_tick_interval(game) if game is not None else self.tick_interval
@@ -947,7 +968,7 @@ class RechargeShieldAbility(SupportOverTimeAbility):
         if self.tick_timer > 0:
             return
         self.tick_timer = self.effective_tick_interval(game)
-        actual = target.restore_shield(self.rate * self.tick_interval)
+        actual = target.restore_shield(self.effective_rate(game) * self.tick_interval)
         if actual <= 0:
             return
         self._award_support_xp(game, actual)
@@ -955,7 +976,7 @@ class RechargeShieldAbility(SupportOverTimeAbility):
 
     def detail_lines(self, game=None) -> list[str]:
         return [
-            f"Recharge {_format_number(self.rate)}/s",
+            f"Recharge {_format_number(self.effective_rate(game))}/s",
             f"Radius {int(self.radius)}",
             f"Tick {_format_seconds(self.effective_tick_interval(game) if game is not None else self.tick_interval)}",
         ]
@@ -2149,6 +2170,15 @@ def create_catalog_ability(request_number: int, owner=None) -> GameplayAbility:
     return definition.create(owner)
 
 
+def create_hero_ability(ability_id: str, owner=None) -> GameplayAbility:
+    if ability_id == MultiShotAttackAbility.ability_id:
+        return MultiShotAttackAbility(owner)
+    for definition in CATALOG_ABILITY_DEFINITIONS.values():
+        if definition.ability_id == ability_id:
+            return definition.create(owner)
+    raise KeyError(f"Unknown hero ability '{ability_id}'.")
+
+
 def configure_troop_abilities(owner) -> AbilitySystemComponent:
     component = getattr(owner, "abilities", None)
     if component is None:
@@ -2158,8 +2188,22 @@ def configure_troop_abilities(owner) -> AbilitySystemComponent:
         component.clear()
 
     kind = getattr(owner, "kind", "")
+    unlocked_hero_abilities = tuple(getattr(owner, "hero_unlocked_ability_ids", lambda: ())())
+    unlocked_hero_ability_set = set(unlocked_hero_abilities)
+    archer_has_multishot = MultiShotAttackAbility.ability_id in unlocked_hero_ability_set
     if kind == "archer":
-        component.add(MultiShotAttackAbility(owner))
+        if archer_has_multishot:
+            component.add(MultiShotAttackAbility(owner))
+        else:
+            component.add(
+                MeleeAttackAbility(
+                    owner,
+                    name="Single Shot",
+                    description="Fires one precise arrow at the current target.",
+                    element="physical",
+                    particle_count=0,
+                )
+            )
         component.add(TargetPriorityPassive(owner, ability_id="archer_ranged_priority", name="Ranged Priority", description="Prioritizes ranged enemies before other valid targets."))
     elif kind == "rune_mage":
         component.add(AreaElementalAttackAbility(owner))
@@ -2177,6 +2221,11 @@ def configure_troop_abilities(owner) -> AbilitySystemComponent:
             component.add(RepairTowerAbility(owner))
         elif kind == "wizard":
             component.add(ChainLightningAbility(owner))
+
+    for ability_id in unlocked_hero_abilities:
+        if kind == "archer" and ability_id == MultiShotAttackAbility.ability_id:
+            continue
+        component.add(create_hero_ability(ability_id, owner))
 
     for ability in getattr(owner, "equipment_passive_abilities", lambda: [])():
         component.add(ability)

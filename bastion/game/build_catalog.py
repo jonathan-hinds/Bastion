@@ -11,6 +11,7 @@ from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUE
 from bastion.game.units import (
     Barracks,
     HOUSE_CAPACITY,
+    HeroHall,
     House,
     Library,
     ResearchBuilding,
@@ -249,6 +250,14 @@ BUILD_MENU_ENTRIES = (
             f"{TrainingGrounds.xp_interval:0.1f}s interval",
             f"{TrainingGrounds.max_trainees} troops",
         ),
+    ),
+    BuildMenuEntry(
+        "hero_hall",
+        "Hero Hall",
+        "advancement",
+        "Unlocks troop ascension trees that spend hero orbs earned every three levels.",
+        (),
+        (f"HP {int(HeroHall.max_health)}", "Troop hero trees", "Orb ascension"),
     ),
     BuildMenuEntry(
         "research",
