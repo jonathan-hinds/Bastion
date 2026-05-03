@@ -20,8 +20,9 @@ from bastion.game.research import ResearchManager
 from bastion.game.resources import GoldDeposit, MineralDeposit, MineralExtractor
 from bastion.game.round_events import RoundEventManager
 from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUEPRINTS, stats_for, tower_name, xp_needed
-from bastion.game.units import Barracks, HOUSE_CAPACITY, HeroHall, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
+from bastion.game.units import Barracks, ExpeditionCampsite, HOUSE_CAPACITY, HeroHall, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
 from bastion.game.waves import WaveManager
+from bastion.game.expeditions import ExpeditionResult, ExpeditionRun
 
 
 class CoreTarget:
@@ -131,7 +132,7 @@ class GameState:
         self.core_target = CoreTarget(self, self.grid.townhall_cell, primary=True)
         self.core_targets: list[CoreTarget] = [self.core_target]
         self.towers: list[Tower] = []
-        self.buildings: list[Barracks | House | MineralExtractor | Torch | TrainingGrounds | HeroHall | ResearchBuilding | Library | ShieldGenerator] = []
+        self.buildings: list[Barracks | House | MineralExtractor | Torch | TrainingGrounds | ExpeditionCampsite | HeroHall | ResearchBuilding | Library | ShieldGenerator] = []
         self.arcane_links: list[ArcaneLink] = []
         self.troops: list[Troop] = []
         self.enemies: list[Enemy] = []
@@ -151,6 +152,7 @@ class GameState:
         self.selected_extractor: MineralExtractor | None = None
         self.selected_torch: Torch | None = None
         self.selected_training_grounds: TrainingGrounds | None = None
+        self.selected_expedition_campsite: ExpeditionCampsite | None = None
         self.selected_hero_hall: HeroHall | None = None
         self.selected_research: ResearchBuilding | None = None
         self.selected_library: Library | None = None
@@ -158,6 +160,10 @@ class GameState:
         self.selected_troop: Troop | None = None
         self.selected_troops: list[Troop] = []
         self.control_groups: list[list[Troop]] = [[] for _ in range(5)]
+        self.expedition_setup_party: list[Troop] = []
+        self.expedition_setup_group: int | None = None
+        self.expedition_run: ExpeditionRun | None = None
+        self.expedition_recap: ExpeditionResult | None = None
         self.selected_wall: tuple[int, int] | None = None
         self.pending_camera_focus: pygame.Vector2 | None = None
         self.station_mode = False
@@ -491,6 +497,8 @@ class GameState:
             self.selected_torch = None
         if self.selected_training_grounds and not self.selected_training_grounds.alive:
             self.selected_training_grounds = None
+        if self.selected_expedition_campsite and not self.selected_expedition_campsite.alive:
+            self.selected_expedition_campsite = None
         if self.selected_hero_hall and not self.selected_hero_hall.alive:
             self.selected_hero_hall = None
         if self.selected_research and not self.selected_research.alive:
@@ -1151,6 +1159,8 @@ class GameState:
         killed = enemy.take_damage(actual_amount, owner)
         if effect is not None and enemy.alive:
             self.apply_elemental_effect(enemy, effect, owner, source_pos)
+        if hasattr(enemy, "abilities"):
+            enemy.abilities.on_owner_damaged(actual_amount, owner, source_pos, element, self)
         if not quiet and actual_amount >= 2:
             hit_source = source_pos
             if hit_source is None and owner is not None:
@@ -1388,6 +1398,7 @@ class GameState:
         self.selected_extractor = None
         self.selected_torch = None
         self.selected_training_grounds = None
+        self.selected_expedition_campsite = None
         self.selected_hero_hall = None
         self.selected_research = None
         self.selected_library = None
@@ -1436,6 +1447,8 @@ class GameState:
             self.selected_torch = structure
         elif isinstance(structure, TrainingGrounds):
             self.selected_training_grounds = structure
+        elif isinstance(structure, ExpeditionCampsite):
+            self.selected_expedition_campsite = structure
         elif isinstance(structure, HeroHall):
             self.selected_hero_hall = structure
         elif isinstance(structure, ResearchBuilding):
@@ -1452,6 +1465,7 @@ class GameState:
             or self.selected_extractor is not None
             or self.selected_torch is not None
             or self.selected_training_grounds is not None
+            or self.selected_expedition_campsite is not None
             or self.selected_hero_hall is not None
             or self.selected_research is not None
             or self.selected_library is not None
@@ -1603,6 +1617,7 @@ class GameState:
             self.selected_extractor = None
             self.selected_torch = None
             self.selected_training_grounds = None
+            self.selected_expedition_campsite = None
             self.selected_hero_hall = None
             self.selected_research = None
             self.selected_library = None
@@ -1634,6 +1649,7 @@ class GameState:
             self.selected_extractor = None
             self.selected_torch = None
             self.selected_training_grounds = None
+            self.selected_expedition_campsite = None
             self.selected_hero_hall = None
             self.selected_research = None
             self.selected_library = None
@@ -1748,6 +1764,28 @@ class GameState:
             self.gold -= cost
             self.clear_selection()
             self.selected_training_grounds = training_grounds
+            self.play_sound("menu_select")
+
+        if mode == "expedition_campsite":
+            if not self.can_build_on(cell):
+                self.message("BLOCKED")
+                return
+            core, path, reason = self.arcane_source_for_cell(cell)
+            if core is None:
+                self.message(reason)
+                return
+            campsite = ExpeditionCampsite(cell, self.grid)
+            ok, reason = self.grid.try_add_tower(cell, campsite)
+            if not ok:
+                self.message(reason.upper())
+                return
+            self._reserve_arcane_link(campsite, core, path)
+            self.buildings.append(campsite)
+            self.gold -= cost
+            self.minerals -= mineral_cost
+            self.clear_selection()
+            self.selected_expedition_campsite = campsite
+            self.message("EXPEDITION CAMP ONLINE")
             self.play_sound("menu_select")
 
         if mode == "hero_hall":
@@ -1881,6 +1919,15 @@ class GameState:
             self.gold += refund
             self.destroy_structure(training_grounds, quiet=True)
             self.texts.append(FloatingText(pygame.Vector2(training_grounds.pos), f"+{refund}", 0.7))
+        elif self.selected_expedition_campsite is not None:
+            campsite = self.selected_expedition_campsite
+            refund = int(BUILD_COSTS["expedition_campsite"] * 0.55)
+            self.gold += refund
+            mineral_refund = int(MINERAL_BUILD_COSTS.get("expedition_campsite", 0) * 0.5)
+            self.minerals += mineral_refund
+            self.destroy_structure(campsite, quiet=True)
+            label = f"+{refund}" if mineral_refund <= 0 else f"+{refund}/+{mineral_refund}M"
+            self.texts.append(FloatingText(pygame.Vector2(campsite.pos), label, 0.7))
         elif self.selected_hero_hall is not None:
             hero_hall = self.selected_hero_hall
             refund = int(BUILD_COSTS["hero_hall"] * 0.55)
@@ -2194,6 +2241,108 @@ class GameState:
     def hero_halls(self) -> list[HeroHall]:
         return [building for building in self.buildings if isinstance(building, HeroHall) and building.alive]
 
+    def expedition_campsites(self) -> list[ExpeditionCampsite]:
+        return [building for building in self.buildings if isinstance(building, ExpeditionCampsite) and building.alive and self.has_arcane_power(building)]
+
+    def expedition_available(self) -> bool:
+        return bool(self.expedition_campsites())
+
+    def register_expedition_control_group(self, index: int) -> bool:
+        if not self.expedition_available():
+            self.message("NEED EXPEDITION CAMP")
+            return False
+        troops = self.control_group_troops(index)
+        troops = [troop for troop in troops if troop.alive]
+        if not troops:
+            self.message(f"GROUP {index + 1} EMPTY")
+            return False
+        if len(troops) > 5:
+            troops = troops[:5]
+            self.message("PARTY CAPPED AT 5")
+        self.expedition_setup_party = list(troops)
+        self.expedition_setup_group = index
+        self.build_mode = None
+        self.station_mode = False
+        self.clear_selection()
+        return True
+
+    def reorder_expedition_party(self, source_index: int, target_index: int) -> bool:
+        party = self.expedition_setup_party
+        if not 0 <= source_index < len(party) or not 0 <= target_index < len(party) or source_index == target_index:
+            return False
+        troop = party.pop(source_index)
+        party.insert(target_index, troop)
+        self.message("PARTY ORDER")
+        return True
+
+    def cancel_expedition_setup(self) -> None:
+        self.expedition_setup_party = []
+        self.expedition_setup_group = None
+        self.message("EXPEDITION CANCELLED")
+
+    def start_expedition_from_setup(self) -> bool:
+        if self.expedition_run is not None or self.expedition_recap is not None:
+            return False
+        if not self.expedition_available():
+            self.message("NEED EXPEDITION CAMP")
+            return False
+        party = [troop for troop in self.expedition_setup_party if troop.alive]
+        if not party:
+            self.message("REGISTER PARTY")
+            return False
+        party = party[:5]
+        self.expedition_setup_party = list(party)
+        self.expedition_run = ExpeditionRun(self, party)
+        self.expedition_setup_party = []
+        self.expedition_setup_group = None
+        self.paused = False
+        self.build_mode = None
+        self.station_mode = False
+        self.clear_selection()
+        self.message("EXPEDITION STARTED")
+        return True
+
+    def finish_expedition_run(self, result: ExpeditionResult) -> None:
+        run = self.expedition_run
+        if run is not None:
+            run.restore_party_to_base()
+        self.expedition_run = None
+        self.expedition_recap = result
+        self.paused = True
+        self.message("EXPEDITION RETURN")
+
+    def abort_expedition_as_loss(self) -> bool:
+        run = self.expedition_run
+        if run is None:
+            return False
+        run.close_as_loss()
+        if run.finished_result is not None:
+            self.finish_expedition_run(run.finished_result)
+        return True
+
+    def accept_expedition_recap(self) -> bool:
+        result = self.expedition_recap
+        if result is None:
+            return False
+        if result.victory:
+            self.gold += result.gold
+            for item_id in result.items:
+                if not self.add_item(item_id):
+                    self.drop_item_at(item_id, pygame.Vector2(self.core_target.pos))
+            for troop in result.party:
+                if troop.alive:
+                    gained = int(result.xp_by_troop_id.get(id(troop), 0))
+                    if gained > 0 and troop.add_xp(gained):
+                        self.texts.append(FloatingText(pygame.Vector2(troop.pos), "READY", 0.9))
+        self.troops = [troop for troop in self.troops if troop.alive]
+        self.selected_troops = [troop for troop in self.selected_troops if troop.alive]
+        self.selected_troop = self.selected_troops[0] if self.selected_troops else None
+        self._prune_control_groups()
+        self.expedition_recap = None
+        self.paused = False
+        self.message("EXPEDITION COMPLETE" if result.victory else "EXPEDITION LOST")
+        return True
+
     def purchase_hero_node_for_selected(self, node_id: str) -> bool:
         troop = self.selected_troop if len(self.selected_troops) == 1 else None
         if troop is None or not troop.alive or not troop.has_hero_tree():
@@ -2414,7 +2563,7 @@ class GameState:
         self.grid.remove_tower(structure.cell)
         if isinstance(structure, Tower) and structure in self.towers:
             self.towers.remove(structure)
-        if isinstance(structure, (Barracks, House, MineralExtractor, Torch, TrainingGrounds, HeroHall, ResearchBuilding, Library, ShieldGenerator)) and structure in self.buildings:
+        if isinstance(structure, (Barracks, House, MineralExtractor, Torch, TrainingGrounds, ExpeditionCampsite, HeroHall, ResearchBuilding, Library, ShieldGenerator)) and structure in self.buildings:
             self.buildings.remove(structure)
         if self.selected_tower is structure:
             self.selected_tower = None
@@ -2428,6 +2577,8 @@ class GameState:
             self.selected_torch = None
         if self.selected_training_grounds is structure:
             self.selected_training_grounds = None
+        if self.selected_expedition_campsite is structure:
+            self.selected_expedition_campsite = None
         if self.selected_hero_hall is structure:
             self.selected_hero_hall = None
         if self.selected_research is structure:
@@ -2510,6 +2661,7 @@ class GameState:
                 or building is self.selected_extractor
                 or building is self.selected_torch
                 or building is self.selected_training_grounds
+                or building is self.selected_expedition_campsite
                 or building is self.selected_hero_hall
                 or building is self.selected_research
                 or building is self.selected_library
@@ -2784,7 +2936,7 @@ class GameState:
         affordable = self.gold >= BUILD_COSTS[mode] and self.minerals >= MINERAL_BUILD_COSTS.get(mode, 0)
         valid = (self.can_build_extractor_on(preview_cell) if mode == "extractor" else self.can_build_on(preview_cell)) and affordable
         preview_path: list[tuple[int, int]] = []
-        structure_modes = ("barracks", "house", "extractor", "torch", "training_grounds", "hero_hall", "research", "library", "shield_generator")
+        structure_modes = ("barracks", "house", "extractor", "torch", "training_grounds", "expedition_campsite", "hero_hall", "research", "library", "shield_generator")
         if valid and (mode == "wall" or mode == "core" or mode in TOWER_BLUEPRINTS or mode in structure_modes):
             blocker = "wall" if mode == "wall" else "tower"
             valid = self.grid.would_keep_paths_open(preview_cell, blocker)
@@ -2809,6 +2961,12 @@ class GameState:
         if mode == "training_grounds":
             center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
             draw_circle_alpha(surface, center, TrainingGrounds.training_radius * camera.zoom, config.PALETTE.white, 22, 1)
+        if mode == "expedition_campsite":
+            center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
+            for index in range(5):
+                angle = -math.pi / 2 + index * math.tau / 5
+                orb = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * 32 * camera.zoom
+                draw_circle_alpha(surface, orb, 5 * camera.zoom, config.PALETTE.white, 42, 1)
         if not valid:
             pygame.draw.line(surface, color, rect.topleft, rect.bottomright, max(1, int(camera.zoom)))
             pygame.draw.line(surface, color, rect.topright, rect.bottomleft, max(1, int(camera.zoom)))

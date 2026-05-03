@@ -120,6 +120,96 @@
         "lightning": 1.0,
         "holy": 1.0
       }
+    },
+    {
+      "id": "boss_lightning",
+      "name": "Stormcaller",
+      "type": "elemental",
+      "combat_role": "ranged",
+      "shape": "cross_circle",
+      "tags": ["boss", "ranged", "lightning"],
+      "stats": {
+        "health": 520,
+        "speed": 72,
+        "radius": 20,
+        "reward": 38,
+        "damage": 12,
+        "accel": 560,
+        "mass": 1.65,
+        "attack_range": 225,
+        "fire_rate": 0.72,
+        "projectile_speed": 340
+      },
+      "loot": {
+        "drop_chance": 1.0
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.0,
+        "ice": 1.05,
+        "lightning": 0.70,
+        "holy": 1.0
+      }
+    },
+    {
+      "id": "boss_fire",
+      "name": "Emberlord",
+      "type": "elemental",
+      "combat_role": "ranged",
+      "shape": "octagon",
+      "tags": ["boss", "ranged", "fire"],
+      "stats": {
+        "health": 600,
+        "speed": 58,
+        "radius": 22,
+        "reward": 42,
+        "damage": 16,
+        "accel": 430,
+        "mass": 1.95,
+        "attack_range": 245,
+        "fire_rate": 0.46,
+        "projectile_speed": 220
+      },
+      "loot": {
+        "drop_chance": 1.0
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 0.62,
+        "ice": 1.15,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
+    },
+    {
+      "id": "boss_ice",
+      "name": "Frostwarden",
+      "type": "elemental",
+      "combat_role": "ranged",
+      "shape": "square",
+      "tags": ["boss", "ranged", "ice"],
+      "stats": {
+        "health": 560,
+        "speed": 64,
+        "radius": 21,
+        "reward": 40,
+        "damage": 13,
+        "accel": 480,
+        "mass": 1.80,
+        "attack_range": 215,
+        "fire_rate": 0.66,
+        "projectile_speed": 260
+      },
+      "loot": {
+        "drop_chance": 1.0
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.16,
+        "ice": 0.65,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
     }
   ]
 }

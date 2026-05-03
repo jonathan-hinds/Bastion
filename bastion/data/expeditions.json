@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "expeditions": [
+    {
+      "id": "forgotten_depths",
+      "name": "Forgotten Depths",
+      "max_party_size": 5,
+      "seed_salt": 17,
+      "dungeon": {
+        "width": 92,
+        "height": 68,
+        "main_rooms": 9,
+        "side_rooms": 5,
+        "room_min_size": 7,
+        "room_max_size": 13,
+        "hallway_half_width": 1
+      },
+      "normal_encounters": [
+        {"room_type": "combat", "enemies": ["small", "small", "medium"]},
+        {"room_type": "combat", "enemies": ["small", "medium", "ranged"]},
+        {"room_type": "trap", "enemies": ["small", "small", "ranged"]},
+        {"room_type": "large_combat", "enemies": ["small", "small", "medium", "medium", "ranged"]}
+      ],
+      "loot_rooms": {
+        "gold_min": 10,
+        "gold_max": 28,
+        "item_rolls": 2
+      },
+      "boss_wave_counts": [5, 6, 7],
+      "bosses": [
+        {
+          "id": "stormcaller",
+          "enemy_kind": "boss_lightning",
+          "name": "Stormcaller",
+          "element": "lightning",
+          "weight": 1,
+          "abilities": [
+            {
+              "id": "boss_lightning_strike",
+              "kind": "telegraphed_strike",
+              "name": "Lightning Strike",
+              "element": "lightning",
+              "damage": 13,
+              "radius": 22,
+              "cooldown": 1.35,
+              "cast_time": 0.48,
+              "targeting": "random"
+            },
+            {
+              "id": "boss_chain_lightning",
+              "kind": "party_pulse",
+              "name": "Chain Lightning",
+              "element": "lightning",
+              "damage": 11,
+              "radius": 210,
+              "cooldown": 7.25,
+              "cast_time": 1.05,
+              "status_duration": 0.16
+            },
+            {
+              "id": "boss_teleport_away",
+              "kind": "dash",
+              "name": "Blink Step",
+              "distance": 185,
+              "cooldown": 5.5,
+              "trigger_distance": 150,
+              "chance": 0.55,
+              "teleport": true
+            }
+          ]
+        },
+        {
+          "id": "emberlord",
+          "enemy_kind": "boss_fire",
+          "name": "Emberlord",
+          "element": "fire",
+          "weight": 1,
+          "abilities": [
+            {
+              "id": "boss_fireball",
+              "kind": "projectile",
+              "name": "Fireball",
+              "element": "fire",
+              "damage": 22,
+              "radius": 44,
+              "speed": 150,
+              "cooldown": 2.65,
+              "cast_time": 0.72,
+              "ground_duration": 10,
+              "burn_dps": 4.2,
+              "burn_duration": 3.5
+            },
+            {
+              "id": "boss_erupt",
+              "kind": "radial_projectiles",
+              "name": "Erupt",
+              "element": "fire",
+              "damage": 17,
+              "radius": 38,
+              "speed": 185,
+              "projectiles": 8,
+              "cooldown": 9.5,
+              "cast_time": 1.2,
+              "ground_duration": 10,
+              "burn_dps": 4.6,
+              "burn_duration": 4.0
+            },
+            {
+              "id": "boss_contact_burn",
+              "kind": "contact_burn",
+              "name": "Molten Skin",
+              "damage_per_second": 5,
+              "duration": 3.5,
+              "cooldown": 0.75,
+              "radius": 44
+            }
+          ]
+        },
+        {
+          "id": "frostwarden",
+          "enemy_kind": "boss_ice",
+          "name": "Frostwarden",
+          "element": "ice",
+          "weight": 1,
+          "abilities": [
+            {
+              "id": "boss_ice_attack",
+              "kind": "projectile",
+              "name": "Ice Attack",
+              "element": "ice",
+              "damage": 14,
+              "radius": 24,
+              "speed": 230,
+              "cooldown": 1.75,
+              "cast_time": 0.44,
+              "slow_multiplier": 0.62,
+              "status_duration": 2.0
+            },
+            {
+              "id": "boss_frost_nova",
+              "kind": "party_pulse",
+              "name": "Frost Nova",
+              "element": "ice",
+              "damage": 9,
+              "radius": 150,
+              "cooldown": 7.75,
+              "cast_time": 0.92,
+              "slow_multiplier": 0.36,
+              "status_duration": 2.4,
+              "knockback": 190
+            },
+            {
+              "id": "boss_slowing_presence",
+              "kind": "slow_aura",
+              "name": "Slowing Presence",
+              "radius": 145,
+              "slow_multiplier": 0.72,
+              "attack_slow_multiplier": 0.84,
+              "interval": 0.25
+            }
+          ]
+        }
+      ],
+      "guaranteed_boss_items": 5,
+      "rewards": {
+        "enemy_xp_multiplier": 2.0,
+        "boss_gold": 75,
+        "completion_gold": 45,
+        "completion_xp": 42
+      }
+    }
+  ]
+}

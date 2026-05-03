@@ -1093,6 +1093,136 @@ class EnemyProjectile:
         pygame.draw.circle(surface, config.PALETTE.white, screen, max(3, int(6.0 * camera.zoom)), 1)
 
 
+class HostileAoeProjectile:
+    def __init__(
+        self,
+        pos: pygame.Vector2,
+        target_pos: pygame.Vector2,
+        speed: float,
+        damage: float,
+        owner=None,
+        *,
+        element: str = "physical",
+        radius: float = 0.0,
+        burn_dps: float = 0.0,
+        burn_duration: float = 0.0,
+        slow_multiplier: float = 1.0,
+        status_duration: float = 0.0,
+        ground_duration: float = 0.0,
+        max_distance: float | None = None,
+    ) -> None:
+        self.pos = pygame.Vector2(pos)
+        self.origin = pygame.Vector2(pos)
+        self.destination = pygame.Vector2(target_pos)
+        delta = self.destination - self.pos
+        if delta.length_squared() == 0:
+            angle = random.random() * math.tau
+            delta = pygame.Vector2(math.cos(angle), math.sin(angle))
+            self.destination = self.pos + delta * 64
+        self.direction = delta.normalize()
+        if max_distance is not None:
+            self.destination = self.origin + self.direction * float(max_distance)
+        self.speed = float(speed)
+        self.damage = float(damage)
+        self.owner = owner
+        self.element = element
+        self.radius = float(radius)
+        self.burn_dps = float(burn_dps)
+        self.burn_duration = float(burn_duration)
+        self.slow_multiplier = float(slow_multiplier)
+        self.status_duration = float(status_duration)
+        self.ground_duration = float(ground_duration)
+        self.trail: list[pygame.Vector2] = [pygame.Vector2(pos)]
+        self.life = 5.0
+        self.alive = True
+
+    def update(self, dt: float, game) -> None:
+        if not self.alive:
+            return
+        self.life -= dt
+        if self.life <= 0:
+            self.alive = False
+            return
+
+        previous = pygame.Vector2(self.pos)
+        delta = self.destination - self.pos
+        distance = max(0.0, delta.dot(self.direction))
+        step = self.speed * dt
+        next_pos = self.pos + self.direction * min(step, distance)
+        hit_target = self._segment_hit_target(previous, next_pos, game)
+        if hit_target is not None:
+            self.pos = pygame.Vector2(hit_target.pos)
+            self.impact(game)
+            self.alive = False
+            return
+        if distance <= step:
+            self.pos = pygame.Vector2(self.destination)
+            self.impact(game)
+            self.alive = False
+            return
+        self.pos = next_pos
+        self.trail.append(pygame.Vector2(self.pos))
+        if len(self.trail) > 9:
+            self.trail.pop(0)
+
+    def _segment_hit_target(self, start: pygame.Vector2, end: pygame.Vector2, game):
+        hit_radius = max(5.0, self.radius * 0.18)
+        candidates = game.nearby_troops(self.pos, max(48.0, self.radius + 32.0)) if hasattr(game, "nearby_troops") else getattr(game, "troops", [])
+        for troop in candidates:
+            if getattr(troop, "alive", False) and _segment_distance(start, end, troop.pos) <= troop.radius + hit_radius:
+                return troop
+        return None
+
+    def impact(self, game) -> None:
+        radius = max(0.0, self.radius)
+        if radius > 0 and hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(self.pos, "aoe", radius)
+        else:
+            game.spawn_burst(self.pos, 6, 38)
+
+        targets = game.nearby_troops(self.pos, radius + 34.0) if radius > 0 and hasattr(game, "nearby_troops") else getattr(game, "troops", [])
+        if radius <= 0:
+            targets = [
+                troop
+                for troop in targets
+                if getattr(troop, "alive", False) and troop.pos.distance_to(self.pos) <= troop.radius + 8.0
+            ]
+        for troop in list(targets):
+            if not getattr(troop, "alive", False):
+                continue
+            distance = troop.pos.distance_to(self.pos)
+            if radius > 0 and distance > radius + troop.radius:
+                continue
+            falloff = 1.0 if radius <= 0 else 1.0 - min(0.45, distance / max(1.0, radius) * 0.35)
+            game.damage_friendly(troop, self.damage * falloff, source_pos=pygame.Vector2(self.pos), element=self.element, source=self.owner)
+            self._apply_status(troop)
+
+        if self.ground_duration > 0 and hasattr(game, "add_hazard"):
+            dps = max(self.burn_dps, self.damage * 0.18)
+            game.add_hazard(self.owner, self.pos, max(22.0, radius), self.ground_duration, dps, self.element)
+
+    def _apply_status(self, target) -> None:
+        if self.element == "fire" and self.burn_dps > 0 and hasattr(target, "apply_burn"):
+            target.apply_burn(self.burn_dps, max(0.1, self.burn_duration), self.owner)
+        elif self.element == "ice" and self.status_duration > 0 and hasattr(target, "apply_slow"):
+            target.apply_slow(self.slow_multiplier, self.status_duration, self.slow_multiplier)
+        elif self.element == "lightning" and self.status_duration > 0 and hasattr(target, "apply_stun"):
+            target.apply_stun(self.status_duration)
+
+    def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        if not self.alive:
+            return
+        for i, point in enumerate(self.trail):
+            t = (i + 1) / max(1, len(self.trail))
+            screen = camera.world_to_screen(point, viewport)
+            draw_circle_alpha(surface, screen, (2.0 + 4.8 * t) * camera.zoom, config.PALETTE.white, int(26 + 96 * t), 1)
+        screen = camera.world_to_screen(self.pos, viewport)
+        radius = 5.5 if self.element != "fire" else 7.0
+        if self.radius > 0:
+            draw_circle_alpha(surface, screen, (radius + 6) * camera.zoom, config.PALETTE.white, 42, 1)
+        pygame.draw.circle(surface, config.PALETTE.white, screen, max(2, int(radius * camera.zoom)))
+
+
 def _research_multiplier(owner, research_id: str) -> float:
     research = getattr(owner, "research", None)
     return research.multiplier(research_id) if research is not None else 1.0

@@ -7,14 +7,16 @@ import pygame
 
 from bastion import config
 from bastion.engine import hover_feedback
+from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.game.abilities import AbilityCard
 from bastion.game.build_catalog import BUILD_CATEGORY_BY_ID, BuildMenuEntry, iter_build_categories
+from bastion.game.expeditions import EXPEDITION_METRIC_LABELS, EXPEDITION_METRIC_OPTIONS
 from bastion.game.hero_trees import HeroNodeDefinition, HeroTreeDefinition
 from bastion.game.items import ITEM_DEFINITIONS
 from bastion.game.research import RESEARCH_DEFINITIONS
 from bastion.game.tower_defs import SPECIALIZATIONS, xp_needed
 from bastion.game.tower_mods import TOWER_MODS
-from bastion.game.units import ATTRIBUTE_ORDER, ATTRIBUTE_SHORT_LABELS, HOUSE_CAPACITY, TROOP_DATA, TROOP_NAMES, troop_ability_cards
+from bastion.game.units import ATTRIBUTE_ORDER, ATTRIBUTE_SHORT_LABELS, ExpeditionCampsite, HOUSE_CAPACITY, TROOP_DATA, TROOP_NAMES, troop_ability_cards
 from bastion.ui.panel_window import PanelWindow
 from bastion.ui.widgets import Button
 
@@ -23,6 +25,8 @@ BASE_TOOLBAR_ENTRY = ("build", "B", "Build")
 LEVEL_TOOLBAR_ENTRY = ("level", "L", "Levels")
 HERO_TOOLBAR_ENTRY = ("hero", "H", "Hero")
 INSPECTOR_TOOLBAR_ENTRY = ("inspector", "N", "Inspect")
+EXPEDITION_TOOLBAR_ENTRY = ("expedition", "E", "Expedition")
+EXPEDITION_METRICS_TOOLBAR_ENTRY = ("expedition_metrics", "M", "Metrics")
 
 RESEARCH_CATEGORIES = (
     ("Tower Systems", ("archer_attack_speed", "cannon_damage", "wizard_tower_range", "wizard_lightning_arc", "wizard_freeze_duration")),
@@ -67,6 +71,7 @@ class HUD:
             "items": PanelWindow("items", "Bastion // Inventory", (640, 520), (200, 160)),
             "level": PanelWindow("level", "Bastion // Level Up", (560, 560), (220, 140)),
             "hero": PanelWindow("hero", "Bastion // Hero Hall", (860, 640), (180, 120)),
+            "expedition": PanelWindow("expedition", "Bastion // Expedition", (720, 620), (170, 130)),
             "inspector": PanelWindow("inspector", "Bastion // Inspector", (360, 640), (980, 120)),
         }
         self.window_buttons: dict[str, list[Button]] = {}
@@ -82,6 +87,9 @@ class HUD:
         self.hero_tree_dragging = False
         self.hero_tree_drag_last = pygame.Vector2(0, 0)
         self.hero_tree_context_signature: tuple[str, int] | None = None
+        self.expedition_drag_index: int | None = None
+        self.expedition_metric_slots = ["damage_done", "damage_taken", "healing_done", "dps"]
+        self.expedition_metric_dropdown: int | None = None
 
     def _mouse_pos(self) -> tuple[int, int]:
         return self.render_mouse_pos
@@ -94,6 +102,8 @@ class HUD:
         buttons: list[Button] = []
         choosing_event = state.round_events.awaiting_choice
         self._sync_contextual_panels(state)
+        if getattr(state, "expedition_run", None) is not None and self.active_panel not in (None, "expedition_metrics"):
+            self.active_panel = None
 
         status_y = config.TITLE_BAR_HEIGHT + 13
         x = max(config.TOOLBAR_WIDTH + 500, screen_rect.right - 344)
@@ -134,7 +144,7 @@ class HUD:
             )
             tool_y += 48
 
-        if self.active_panel and not choosing_event and not self._using_external_windows():
+        if self.active_panel and not choosing_event and (not self._using_external_windows() or self.active_panel == "expedition_metrics"):
             panel_rect = self._active_panel_rect(screen_rect, viewport)
             buttons.append(Button(pygame.Rect(panel_rect.right - 34, panel_rect.top + 8, 22, 22), "X", "close_panel"))
             if self.active_panel == "build":
@@ -149,19 +159,28 @@ class HUD:
                 buttons.extend(self._layout_level_buttons(panel_rect, state))
             elif self.active_panel == "hero":
                 buttons.extend(self._layout_hero_buttons(panel_rect, state))
+            elif self.active_panel == "expedition":
+                buttons.extend(self._layout_expedition_buttons(panel_rect, state))
+            elif self.active_panel == "expedition_metrics":
+                buttons.extend(self._layout_expedition_metric_buttons(panel_rect, state))
 
         if choosing_event:
             for event, rect in self._event_card_rects(viewport, state):
                 button_rect = pygame.Rect(rect.left + 16, rect.bottom - 48, rect.width - 32, 32)
                 buttons.append(Button(button_rect, "ACCEPT", "round_event", event.id))
         else:
-            if not self._using_external_windows():
+            if not self._using_external_windows() and getattr(state, "expedition_run", None) is None:
                 buttons.extend(self._layout_context_buttons(screen_rect, viewport, state))
 
         if state.game_over:
             rect = pygame.Rect(0, 0, 168, 38)
             rect.center = (viewport.centerx, viewport.centery + 80)
             buttons.append(Button(rect, "RESTART", "restart"))
+
+        if getattr(state, "expedition_recap", None) is not None:
+            rect = pygame.Rect(0, 0, 160, 36)
+            rect.center = (viewport.centerx, viewport.centery + 180)
+            buttons.append(Button(rect, "ACCEPT", "expedition_accept_recap"))
 
         self.buttons = buttons
         return buttons
@@ -198,6 +217,8 @@ class HUD:
         self.dragging_panel = None
 
     def _toolbar_entries(self, state) -> list[tuple[str, str, str]]:
+        if getattr(state, "expedition_run", None) is not None:
+            return [EXPEDITION_METRICS_TOOLBAR_ENTRY]
         entries = [BASE_TOOLBAR_ENTRY, LEVEL_TOOLBAR_ENTRY, INSPECTOR_TOOLBAR_ENTRY]
         if self._living_barracks(state):
             entries.append(("units", "U", "Units"))
@@ -205,6 +226,8 @@ class HUD:
             entries.append(("research", "R", "Research"))
         if self._hero_panel_available(state):
             entries.append(HERO_TOOLBAR_ENTRY)
+        if self._living_expedition_campsites(state) or getattr(state, "expedition_setup_party", None):
+            entries.append(EXPEDITION_TOOLBAR_ENTRY)
         if any(getattr(building, "kind", "") == "library" and getattr(building, "alive", False) for building in state.buildings) or any(
             slot is not None for slot in getattr(state.inventory, "slots", [])
         ):
@@ -219,6 +242,9 @@ class HUD:
 
     def _living_hero_halls(self, state) -> list:
         return [building for building in state.buildings if getattr(building, "kind", "") == "hero_hall" and getattr(building, "alive", False)]
+
+    def _living_expedition_campsites(self, state) -> list:
+        return [building for building in state.buildings if getattr(building, "kind", "") == "expedition_campsite" and getattr(building, "alive", False)]
 
     def _hero_panel_available(self, state) -> bool:
         selected = getattr(state, "selected_troop", None)
@@ -267,6 +293,9 @@ class HUD:
         if self.active_panel == "hero" and not self._hero_panel_available(state):
             self.active_panel = None
             self.hero_tree_dragging = False
+        if self.active_panel == "expedition" and not self._living_expedition_campsites(state):
+            self.active_panel = None
+            self.expedition_drag_index = None
 
         if self.units_panel_barracks is not None and not getattr(self.units_panel_barracks, "alive", False):
             self.units_panel_barracks = None
@@ -280,6 +309,8 @@ class HUD:
             signature = ("research", id(state.selected_research))
         elif getattr(state, "selected_hero_hall", None) is not None and getattr(state.selected_hero_hall, "alive", False):
             signature = ("hero_hall", id(state.selected_hero_hall))
+        elif getattr(state, "selected_expedition_campsite", None) is not None and getattr(state.selected_expedition_campsite, "alive", False):
+            signature = ("expedition_campsite", id(state.selected_expedition_campsite))
 
         if signature is None:
             self.last_context_signature = None
@@ -308,6 +339,12 @@ class HUD:
                 self.open_panel_window("hero")
             self.dialog_scroll = 0.0
             self.dialog_scroll_max = 0.0
+        elif signature[0] == "expedition_campsite":
+            self.active_panel = "expedition"
+            if self._using_external_windows():
+                self.open_panel_window("expedition")
+            self.dialog_scroll = 0.0
+            self.dialog_scroll_max = 0.0
 
     def handle_event(self, event: pygame.event.Event, state, screen_rect: pygame.Rect | None = None, viewport: pygame.Rect | None = None) -> bool:
         if screen_rect is None or viewport is None:
@@ -319,6 +356,14 @@ class HUD:
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             if self.hero_tree_dragging:
                 self.hero_tree_dragging = False
+                return True
+            if self.expedition_drag_index is not None:
+                target = None
+                if self.active_panel == "expedition":
+                    target = self._expedition_orb_at(event.pos, self._active_panel_rect(screen_rect, viewport), state)
+                if target is not None and state.reorder_expedition_party(self.expedition_drag_index, target):
+                    state.play_sound("menu_select")
+                self.expedition_drag_index = None
                 return True
             if self.item_drag is not None:
                 self._finish_item_drag(event.pos, viewport, state)
@@ -383,6 +428,12 @@ class HUD:
                 panel_rect = self._active_panel_rect(screen_rect, viewport)
                 if self._hero_canvas_rect(panel_rect).collidepoint(pos):
                     self._start_hero_drag(pos)
+                    return True
+            if self.active_panel == "expedition":
+                panel_rect = self._active_panel_rect(screen_rect, viewport)
+                orb_index = self._expedition_orb_at(pos, panel_rect, state)
+                if orb_index is not None:
+                    self.expedition_drag_index = orb_index
                     return True
 
             if self._blocks_world_input(pos, screen_rect, viewport, state):
@@ -587,7 +638,12 @@ class HUD:
                 self.research_panel_lab = None
             elif panel == "hero":
                 self._reset_hero_view_if_context_changed(state, force=True)
-            if self._using_external_windows():
+            elif panel == "expedition":
+                self.expedition_drag_index = None
+            if panel == "expedition_metrics":
+                self.expedition_metric_dropdown = None
+                self.active_panel = None if self.active_panel == panel else panel
+            elif self._using_external_windows():
                 self.toggle_panel_window(panel)
                 self.active_panel = panel if self.panel_windows[panel].visible else None
             else:
@@ -607,6 +663,8 @@ class HUD:
                 self.research_panel_lab = state.selected_research
             elif panel == "hero":
                 self._reset_hero_view_if_context_changed(state, force=True)
+            elif panel == "expedition":
+                self.expedition_drag_index = None
             if self._using_external_windows():
                 self.open_panel_window(panel)
             self.active_panel = panel
@@ -663,6 +721,23 @@ class HUD:
             state.reset()
         elif button.command == "round_event":
             state.choose_round_event(str(button.value))
+        elif button.command == "expedition_register":
+            state.register_expedition_control_group(int(button.value))
+        elif button.command == "expedition_cancel":
+            state.cancel_expedition_setup()
+        elif button.command == "expedition_start":
+            if state.start_expedition_from_setup():
+                self.active_panel = None
+        elif button.command == "expedition_accept_recap":
+            state.accept_expedition_recap()
+        elif button.command == "expedition_metric_dropdown":
+            index = int(button.value)
+            self.expedition_metric_dropdown = None if self.expedition_metric_dropdown == index else index
+        elif button.command == "expedition_metric_select":
+            slot, metric_id = button.value
+            if 0 <= int(slot) < len(self.expedition_metric_slots) and str(metric_id) in EXPEDITION_METRIC_LABELS:
+                self.expedition_metric_slots[int(slot)] = str(metric_id)
+            self.expedition_metric_dropdown = None
 
     def draw(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state) -> None:
         self.render_mouse_pos = pygame.mouse.get_pos()
@@ -670,10 +745,10 @@ class HUD:
         self.layout_buttons(screen_rect, viewport, state)
         self._draw_workspace_shell(surface, screen_rect, viewport, state)
 
-        if self.active_panel and not state.round_events.awaiting_choice and not self._using_external_windows():
+        if self.active_panel and not state.round_events.awaiting_choice and (not self._using_external_windows() or self.active_panel == "expedition_metrics"):
             self._draw_active_panel(surface, screen_rect, viewport, state)
 
-        if not state.round_events.awaiting_choice:
+        if not state.round_events.awaiting_choice and getattr(state, "expedition_run", None) is None:
             if not self._using_external_windows():
                 self._draw_context_inspector(surface, screen_rect, viewport, state)
             self._draw_control_groups(surface, viewport, state)
@@ -683,6 +758,9 @@ class HUD:
 
         if state.round_events.awaiting_choice:
             self._draw_round_event_modal(surface, viewport, state)
+
+        if getattr(state, "expedition_recap", None) is not None:
+            self._draw_expedition_recap(surface, viewport, state)
 
         for button in self.buttons:
             button.draw(surface, self.fonts["small"], self._mouse_pos())
@@ -694,7 +772,7 @@ class HUD:
             image.set_alpha(int(255 * min(1.0, state.notice_timer)))
             surface.blit(image, image.get_rect(center=(viewport.centerx, config.TOP_BAR_HEIGHT + 40)))
 
-        if not state.round_events.awaiting_choice:
+        if not state.round_events.awaiting_choice and getattr(state, "expedition_run", None) is None:
             self._draw_control_group_tooltip(surface, viewport, state, pygame.mouse.get_pos())
             self._draw_item_tooltip(surface, viewport, state, pygame.mouse.get_pos())
             self._draw_pending_tooltip(surface, surface.get_rect())
@@ -779,6 +857,9 @@ class HUD:
             elif panel == "hero":
                 self._draw_hero_panel(surface, content_rect, state)
                 buttons = self._layout_hero_buttons(content_rect, state)
+            elif panel == "expedition":
+                self._draw_expedition_panel(surface, content_rect, state)
+                buttons = self._layout_expedition_buttons(content_rect, state)
             elif panel == "inspector":
                 self._draw_context_inspector_panel(surface, content_rect, state)
                 buttons = self._layout_context_buttons_for_rect(content_rect, state)
@@ -808,6 +889,14 @@ class HUD:
                 window.handle_mouse_up()
                 if panel == "hero":
                     self.hero_tree_dragging = False
+                if panel == "expedition" and self.expedition_drag_index is not None:
+                    surface = window.surface()
+                    if surface is not None:
+                        panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
+                        target = self._expedition_orb_at(event.pos, panel_rect, state)
+                        if target is not None and state.reorder_expedition_party(self.expedition_drag_index, target):
+                            state.play_sound("menu_select")
+                    self.expedition_drag_index = None
                 continue
             if event.kind == "wheel":
                 self._scroll_panel_window(panel, window, event.pos, event.wheel_y, state)
@@ -835,6 +924,13 @@ class HUD:
                         panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
                         if self._hero_canvas_rect(panel_rect).collidepoint(pos):
                             self._start_hero_drag(pos)
+                elif panel == "expedition":
+                    surface = window.surface()
+                    if surface is not None:
+                        panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
+                        orb_index = self._expedition_orb_at(pos, panel_rect, state)
+                        if orb_index is not None:
+                            self.expedition_drag_index = orb_index
 
     def _update_panel_window_hover(self, panel: str, pos: tuple[int, int], state) -> None:
         window = self.panel_windows.get(panel)
@@ -888,6 +984,8 @@ class HUD:
         if panel == "level":
             return self._level_content_height(content, state) + 42
         if panel == "hero":
+            return content.height
+        if panel == "expedition":
             return content.height
         return content.height
 
@@ -1032,6 +1130,10 @@ class HUD:
             self._draw_level_panel(surface, rect, state)
         elif self.active_panel == "hero":
             self._draw_hero_panel(surface, rect, state)
+        elif self.active_panel == "expedition":
+            self._draw_expedition_panel(surface, rect, state)
+        elif self.active_panel == "expedition_metrics":
+            self._draw_expedition_metrics_panel(surface, rect, state)
 
     def _active_panel_rect(self, screen_rect: pygame.Rect, viewport: pygame.Rect) -> pygame.Rect:
         if self.active_panel is None:
@@ -1054,6 +1156,12 @@ class HUD:
         elif panel == "hero":
             width = min(840, max(560, viewport.width - 390))
             height = min(640, viewport.height - 34)
+        elif panel == "expedition":
+            width = min(720, max(520, viewport.width - 390))
+            height = min(620, viewport.height - 34)
+        elif panel == "expedition_metrics":
+            width = min(560, max(460, viewport.width - 520))
+            height = min(650, viewport.height - 34)
         else:
             width = min(720, max(500, viewport.width - 390))
             height = min(560, viewport.height - 34)
@@ -1319,6 +1427,19 @@ class HUD:
                 pygame.draw.line(surface, mark, (x, body.top + tile * 0.24), (x, body.bottom - tile * 0.18), 1)
             pygame.draw.line(surface, mark, (body.left + tile * 0.20, body.centery), (body.right - tile * 0.20, body.centery), line)
             pygame.draw.circle(surface, mark, center + pygame.Vector2(tile * 0.20, 0), max(2, int(tile * 0.08)))
+        elif mode == "expedition_campsite":
+            pygame.draw.rect(surface, fill, body)
+            pygame.draw.rect(surface, mark, body, line)
+            tent = [
+                (body.left + tile * 0.16, body.top + tile * 0.68),
+                (body.centerx, body.top + tile * 0.18),
+                (body.right - tile * 0.16, body.top + tile * 0.68),
+            ]
+            pygame.draw.polygon(surface, mark, tent, line)
+            for index in range(5):
+                angle = -math.pi / 2 + index * math.tau / 5
+                p = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * tile * 0.31
+                pygame.draw.circle(surface, mark, p, max(1, int(tile * 0.045)), 1)
         elif mode == "hero_hall":
             pygame.draw.rect(surface, fill, body)
             pygame.draw.rect(surface, mark, body, line)
@@ -1371,6 +1492,438 @@ class HUD:
         else:
             pygame.draw.rect(surface, fill, body)
             pygame.draw.rect(surface, mark, body, line)
+
+    def _draw_expedition_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
+        palette = config.PALETTE
+        self.dialog_scroll = 0.0
+        self.dialog_scroll_max = 0.0
+        self._draw_dialog_shell(surface, rect, "Expeditions", "Registered control groups enter compact dungeon runs.")
+        content = self._dialog_content_rect(rect)
+        camps = self._living_expedition_campsites(state)
+        left = pygame.Rect(content.left, content.top, min(230, content.width // 2 - 10), content.height)
+        right = pygame.Rect(left.right + 14, content.top, content.right - left.right - 14, content.height)
+
+        self._section(surface, "CONTROL GROUPS", left.left, left.top)
+        y = left.top + 30
+        for index, row in enumerate(self._expedition_group_rects(content, state)):
+            troops = state.control_group_troops(index)
+            selected = getattr(state, "expedition_setup_group", None) == index
+            hovered = row.collidepoint(self._mouse_pos())
+            fill = palette.panel_2 if selected else palette.black
+            pygame.draw.rect(surface, fill, row)
+            pygame.draw.rect(surface, palette.white if hovered or selected else palette.line, row, 1)
+            label = self.fonts["small"].render(f"G{index + 1}", True, palette.text)
+            surface.blit(label, (row.left + 8, row.top + 8))
+            count = self.fonts["tiny"].render(f"{len(troops[:5])}/5", True, palette.text_dim if troops else palette.line_bright)
+            surface.blit(count, (row.left + 44, row.top + 11))
+            icon_x = row.left + 86
+            for troop in troops[:5]:
+                icon = pygame.Rect(icon_x, row.top + 7, 20, 20)
+                self._draw_troop_mini_icon(surface, icon, troop, muted=not troop.alive)
+                icon_x += 23
+            y = row.bottom + 8
+
+        status = "CAMP ONLINE" if camps else "NO CAMP"
+        status_img = self.fonts["tiny"].render(status, True, palette.text_dim)
+        surface.blit(status_img, (left.left, max(y, left.bottom - 22)))
+
+        party = [troop for troop in getattr(state, "expedition_setup_party", []) if getattr(troop, "alive", False)]
+        self._section(surface, "PARTY FORMATION", right.left, right.top)
+        formation = self._expedition_formation_rect(content)
+        pygame.draw.rect(surface, palette.black, formation)
+        pygame.draw.rect(surface, palette.line, formation, 1)
+        self._draw_expedition_links(surface, formation, len(party))
+        for index, troop in enumerate(party):
+            center = self._expedition_orb_positions(content, state)[index]
+            orb_rect = pygame.Rect(0, 0, 46, 46)
+            orb_rect.center = center
+            hovered = orb_rect.collidepoint(self._mouse_pos())
+            draw_circle_alpha(surface, pygame.Vector2(center), 28, palette.white, 28 if not hovered else 62, 1)
+            pygame.draw.circle(surface, palette.black if not hovered else palette.white, center, 20)
+            pygame.draw.circle(surface, palette.white if not hovered else palette.black, center, 20, 1)
+            self._draw_troop_mini_icon(surface, pygame.Rect(center[0] - 10, center[1] - 10, 20, 20), troop, inverted=hovered)
+            if hovered:
+                self.tooltip_request = TooltipRequest(self._troop_tooltip_card(troop, state), self._mouse_pos())
+
+        if not party:
+            empty = self.fonts["small"].render("REGISTER A GROUP", True, palette.text_dim)
+            surface.blit(empty, empty.get_rect(center=formation.center))
+
+        actions = self._expedition_action_rects(content)
+        cancel_label = self.fonts["small"].render("CANCEL", True, palette.text_dim)
+        surface.blit(cancel_label, cancel_label.get_rect(center=actions["cancel"].center))
+        start_label = self.fonts["small"].render("START EXPEDITION", True, palette.text if party and camps else palette.text_dim)
+        surface.blit(start_label, start_label.get_rect(center=actions["start"].center))
+
+    def _layout_expedition_buttons(self, panel_rect: pygame.Rect, state) -> list[Button]:
+        content = self._dialog_content_rect(panel_rect)
+        buttons: list[Button] = []
+        for index, rect in enumerate(self._expedition_group_rects(content, state)):
+            troops = state.control_group_troops(index)
+            buttons.append(Button(rect, "", "expedition_register", index, enabled=bool(troops) and self._living_expedition_campsites(state), visible=False))
+        actions = self._expedition_action_rects(content)
+        buttons.append(Button(actions["cancel"], "", "expedition_cancel", enabled=bool(getattr(state, "expedition_setup_party", [])), visible=False))
+        buttons.append(
+            Button(
+                actions["start"],
+                "",
+                "expedition_start",
+                enabled=bool(getattr(state, "expedition_setup_party", [])) and self._living_expedition_campsites(state) and getattr(state, "expedition_run", None) is None,
+                visible=False,
+            )
+        )
+        return buttons
+
+    def _expedition_group_rects(self, content: pygame.Rect, state) -> list[pygame.Rect]:
+        left_w = min(230, content.width // 2 - 10)
+        x = content.left
+        y = content.top + 30
+        return [pygame.Rect(x, y + index * 40, left_w, 32) for index in range(len(getattr(state, "control_groups", [])))]
+
+    def _expedition_formation_rect(self, content: pygame.Rect) -> pygame.Rect:
+        left_w = min(230, content.width // 2 - 10)
+        x = content.left + left_w + 14
+        return pygame.Rect(x, content.top + 30, content.right - x, max(250, content.height - 96))
+
+    def _expedition_action_rects(self, content: pygame.Rect) -> dict[str, pygame.Rect]:
+        formation = self._expedition_formation_rect(content)
+        y = min(content.bottom - 34, formation.bottom + 14)
+        half = max(120, (formation.width - 10) // 2)
+        return {
+            "cancel": pygame.Rect(formation.left, y, half, 30),
+            "start": pygame.Rect(formation.right - half, y, half, 30),
+        }
+
+    def _expedition_orb_positions(self, content: pygame.Rect, state) -> list[tuple[int, int]]:
+        party = getattr(state, "expedition_setup_party", [])
+        formation = self._expedition_formation_rect(content)
+        center = pygame.Vector2(formation.center)
+        radius = min(formation.width, formation.height) * 0.31
+        points = [
+            pygame.Vector2(0, -radius),
+            pygame.Vector2(radius * 0.95, -radius * 0.30),
+            pygame.Vector2(radius * 0.58, radius * 0.88),
+            pygame.Vector2(-radius * 0.58, radius * 0.88),
+            pygame.Vector2(-radius * 0.95, -radius * 0.30),
+        ]
+        if len(party) == 1:
+            points = [pygame.Vector2(0, 0)]
+        elif len(party) == 2:
+            points = [points[0], pygame.Vector2(0, radius * 0.74)]
+        elif len(party) == 3:
+            points = [points[0], points[2], points[3]]
+        elif len(party) == 4:
+            points = [points[0], points[1], points[3], pygame.Vector2(0, radius * 0.78)]
+        return [(int(center.x + point.x), int(center.y + point.y)) for point in points[: len(party)]]
+
+    def _expedition_orb_at(self, pos: tuple[int, int], panel_rect: pygame.Rect, state) -> int | None:
+        content = self._dialog_content_rect(panel_rect)
+        for index, center in enumerate(self._expedition_orb_positions(content, state)):
+            if pygame.Vector2(pos).distance_to(center) <= 28:
+                return index
+        return None
+
+    def _draw_expedition_links(self, surface: pygame.Surface, formation: pygame.Rect, count: int) -> None:
+        if count < 2:
+            return
+        positions = []
+        center = pygame.Vector2(formation.center)
+        radius = min(formation.width, formation.height) * 0.31
+        for index in range(count):
+            angle = -math.pi / 2 + index * math.tau / max(5, count)
+            positions.append(center + pygame.Vector2(math.cos(angle), math.sin(angle)) * radius)
+        for start, end in zip(positions, positions[1:] + positions[:1]):
+            draw_line_alpha(surface, start, end, config.PALETTE.white, 32, 1)
+
+    def _draw_troop_mini_icon(self, surface: pygame.Surface, rect: pygame.Rect, troop, inverted: bool = False, muted: bool = False) -> None:
+        fill = config.PALETTE.white if inverted else config.PALETTE.black
+        mark = config.PALETTE.black if inverted else (config.PALETTE.text_dim if muted else config.PALETTE.white)
+        pygame.draw.rect(surface, fill, rect)
+        pygame.draw.rect(surface, mark, rect, 1)
+        center = pygame.Vector2(rect.center)
+        r = max(4, min(rect.width, rect.height) // 3)
+        kind = getattr(troop, "kind", "")
+        if kind == "warrior":
+            points = [(center.x, center.y - r), (center.x + r, center.y), (center.x, center.y + r), (center.x - r, center.y)]
+            pygame.draw.polygon(surface, mark, points, 1)
+        elif kind == "archer":
+            pygame.draw.polygon(surface, mark, [(center.x, center.y - r), (center.x + r, center.y + r), (center.x - r, center.y + r)], 1)
+        elif kind == "cleric":
+            pygame.draw.line(surface, mark, (center.x - r, center.y), (center.x + r, center.y), 1)
+            pygame.draw.line(surface, mark, (center.x, center.y - r), (center.x, center.y + r), 1)
+        elif kind in {"wizard", "rune_mage"}:
+            pygame.draw.circle(surface, mark, center, r, 1)
+        else:
+            pygame.draw.circle(surface, mark, center, r, 1)
+
+    def _troop_tooltip_card(self, troop, state) -> AbilityCard:
+        stats = troop.stats(state) if hasattr(troop, "stats") else {}
+        details = [
+            f"LVL {getattr(troop, 'level', 1)}  HP {int(getattr(troop, 'health', 0))}/{int(getattr(troop, 'max_health', 0))}",
+            f"DMG {float(stats.get('damage', 0.0)):0.1f}  RNG {int(float(stats.get('range', 0.0)))}",
+            f"SPD {float(stats.get('movement_speed', getattr(troop, 'speed', 0.0))):0.0f}  XP {getattr(troop, 'xp', 0)}",
+        ]
+        ability_names = [card.name for card in troop.abilities.cards(state)] if hasattr(troop, "abilities") else []
+        if ability_names:
+            details.append("ABIL " + ", ".join(ability_names[:3]))
+        return AbilityCard(getattr(troop, "kind", "troop"), getattr(troop, "display_name", "Troop"), "Expedition party member.", tuple(details), passive=True, state="PARTY")
+
+    def _draw_expedition_recap(self, surface: pygame.Surface, viewport: pygame.Rect, state) -> None:
+        result = getattr(state, "expedition_recap", None)
+        if result is None:
+            return
+        palette = config.PALETTE
+        draw_rect_alpha(surface, viewport, palette.black, 128)
+        rect = pygame.Rect(0, 0, min(620, viewport.width - 80), min(430, viewport.height - 80))
+        rect.center = viewport.center
+        self._alpha_rect(surface, rect, (0, 0, 0, 238))
+        pygame.draw.rect(surface, palette.line_bright, rect, 1)
+        title = "EXPEDITION COMPLETE" if result.victory else "EXPEDITION LOST"
+        surface.blit(self.fonts["large"].render(title, True, palette.white), (rect.left + 24, rect.top + 22))
+        subtitle = self.fonts["small"].render(f"{result.definition_name.upper()}  //  {result.boss_name.upper()}", True, palette.text_dim)
+        surface.blit(subtitle, (rect.left + 24, rect.top + 58))
+
+        reward_y = rect.top + 100
+        rewards = [
+            ("GOLD", str(result.gold if result.victory else 0)),
+            ("ITEMS", str(len(result.items) if result.victory else 0)),
+            ("XP", str(sum(result.xp_by_troop_id.values()) if result.victory else 0)),
+        ]
+        for index, (label, value) in enumerate(rewards):
+            box = pygame.Rect(rect.left + 24 + index * 104, reward_y, 92, 52)
+            pygame.draw.rect(surface, palette.black, box)
+            pygame.draw.rect(surface, palette.line, box, 1)
+            surface.blit(self.fonts["tiny"].render(label, True, palette.text_dim), (box.left + 10, box.top + 8))
+            surface.blit(self.fonts["medium"].render(value, True, palette.text), (box.left + 10, box.top + 25))
+
+        formation = pygame.Rect(rect.left + rect.width - 250, rect.top + 94, 208, 208)
+        pygame.draw.rect(surface, palette.black, formation)
+        pygame.draw.rect(surface, palette.line, formation, 1)
+        center = pygame.Vector2(formation.center)
+        radius = 72
+        party = list(result.party)
+        positions = []
+        base_points = [
+            pygame.Vector2(0, -radius),
+            pygame.Vector2(radius * 0.95, -radius * 0.30),
+            pygame.Vector2(radius * 0.58, radius * 0.88),
+            pygame.Vector2(-radius * 0.58, radius * 0.88),
+            pygame.Vector2(-radius * 0.95, -radius * 0.30),
+        ]
+        if len(party) == 1:
+            base_points = [pygame.Vector2(0, 0)]
+        elif len(party) == 2:
+            base_points = [base_points[0], pygame.Vector2(0, radius * 0.74)]
+        elif len(party) == 3:
+            base_points = [base_points[0], base_points[2], base_points[3]]
+        elif len(party) == 4:
+            base_points = [base_points[0], base_points[1], base_points[3], pygame.Vector2(0, radius * 0.78)]
+        for point in base_points[: len(party)]:
+            positions.append((int(center.x + point.x), int(center.y + point.y)))
+        for start, end in zip(positions, positions[1:] + positions[:1]):
+            draw_line_alpha(surface, pygame.Vector2(start), pygame.Vector2(end), palette.white, 26, 1)
+        for troop, pos in zip(party, positions):
+            dead = id(troop) in result.dead_troop_ids or not getattr(troop, "alive", False)
+            hovered = pygame.Vector2(self._mouse_pos()).distance_to(pos) <= 24
+            pygame.draw.circle(surface, palette.black, pos, 21)
+            pygame.draw.circle(surface, palette.white if not dead else palette.text_dim, pos, 21, 1)
+            self._draw_troop_mini_icon(surface, pygame.Rect(pos[0] - 10, pos[1] - 10, 20, 20), troop, muted=dead)
+            if dead:
+                pygame.draw.line(surface, palette.white, (pos[0] - 16, pos[1] - 16), (pos[0] + 16, pos[1] + 16), 2)
+                pygame.draw.line(surface, palette.white, (pos[0] + 16, pos[1] - 16), (pos[0] - 16, pos[1] + 16), 2)
+            if hovered:
+                self.tooltip_request = TooltipRequest(self._troop_tooltip_card(troop, state), self._mouse_pos())
+
+        y = rect.top + 176
+        if result.victory and result.items:
+            surface.blit(self.fonts["small"].render("ITEMS", True, palette.text), (rect.left + 24, y))
+            y += 28
+            hovered_item = None
+            for index, item_id in enumerate(result.items[:10]):
+                definition = ITEM_DEFINITIONS.get(item_id)
+                if definition is None:
+                    continue
+                item_rect = pygame.Rect(rect.left + 24 + (index % 5) * 42, y + (index // 5) * 42, 32, 32)
+                hovered = item_rect.collidepoint(self._mouse_pos())
+                self._draw_item_icon(surface, item_rect, definition, 1, hovered)
+                if hovered:
+                    hovered_item = definition
+            if hovered_item is not None:
+                self._draw_item_definition_tooltip(
+                    surface,
+                    viewport,
+                    hovered_item,
+                    self._mouse_pos(),
+                    quantity=1,
+                    source_label="EXPEDITION REWARD",
+                )
+        else:
+            line = "NO REWARDS RECOVERED" if not result.victory else "NO ITEMS RECOVERED"
+            surface.blit(self.fonts["small"].render(line, True, palette.text_dim), (rect.left + 24, y))
+
+    def _draw_expedition_metrics_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
+        run = getattr(state, "expedition_run", None)
+        pygame.draw.rect(surface, config.PALETTE.black, rect)
+        pygame.draw.rect(surface, config.PALETTE.white, rect, 1)
+        pygame.draw.line(surface, config.PALETTE.white, (rect.left, rect.top + 42), (rect.right, rect.top + 42), 1)
+        surface.blit(self.fonts["medium"].render("EXPEDITION METRICS", True, config.PALETTE.white), (rect.left + 14, rect.top + 10))
+        if run is None:
+            surface.blit(self.fonts["small"].render("NO ACTIVE RUN", True, config.PALETTE.white), (rect.left + 16, rect.top + 64))
+            return
+
+        elapsed = max(0.1, float(getattr(run, "metrics_elapsed", 0.0)))
+        status = f"{elapsed:0.1f}S  //  {len(getattr(run, 'alive_troops', []))}/{len(getattr(run, 'party', []))} PARTY"
+        label = self.fonts["tiny"].render(status, True, config.PALETTE.white)
+        surface.blit(label, (rect.right - label.get_width() - 42, rect.top + 16))
+
+        content = pygame.Rect(rect.left + 12, rect.top + 54, rect.width - 24, rect.height - 66)
+        chart_rects = self._expedition_metric_chart_rects(content)
+        hovered_row = None
+        for index, chart_rect in enumerate(chart_rects):
+            metric_id = self.expedition_metric_slots[index % len(self.expedition_metric_slots)]
+            row = self._draw_expedition_metric_chart(surface, chart_rect, run, metric_id, index)
+            hovered_row = row or hovered_row
+
+        if self.expedition_metric_dropdown is not None and 0 <= self.expedition_metric_dropdown < len(chart_rects):
+            self._draw_expedition_metric_dropdown(surface, chart_rects[self.expedition_metric_dropdown])
+        if hovered_row is not None and self.expedition_metric_dropdown is None:
+            self._draw_expedition_metric_tooltip(surface, rect, hovered_row)
+
+    def _layout_expedition_metric_buttons(self, panel_rect: pygame.Rect, state) -> list[Button]:
+        if getattr(state, "expedition_run", None) is None:
+            return []
+        content = pygame.Rect(panel_rect.left + 12, panel_rect.top + 54, panel_rect.width - 24, panel_rect.height - 66)
+        buttons: list[Button] = []
+        charts = self._expedition_metric_chart_rects(content)
+        for index, chart in enumerate(charts):
+            header = self._expedition_metric_header_rect(chart)
+            buttons.append(Button(header, "", "expedition_metric_dropdown", index, visible=False))
+        if self.expedition_metric_dropdown is not None and 0 <= self.expedition_metric_dropdown < len(charts):
+            for metric_id, option_rect in self._expedition_metric_option_rects(charts[self.expedition_metric_dropdown]):
+                buttons.append(Button(option_rect, "", "expedition_metric_select", (self.expedition_metric_dropdown, metric_id), visible=False))
+        return buttons
+
+    def _expedition_metric_chart_rects(self, content: pygame.Rect) -> list[pygame.Rect]:
+        gap = 10
+        width = max(140, (content.width - gap) // 2)
+        height = max(150, (content.height - gap) // 2)
+        return [
+            pygame.Rect(content.left + (index % 2) * (width + gap), content.top + (index // 2) * (height + gap), width, height)
+            for index in range(4)
+        ]
+
+    def _expedition_metric_header_rect(self, chart: pygame.Rect) -> pygame.Rect:
+        return pygame.Rect(chart.left + 8, chart.top + 8, chart.width - 16, 24)
+
+    def _expedition_metric_option_rects(self, chart: pygame.Rect) -> list[tuple[str, pygame.Rect]]:
+        menu = pygame.Rect(chart.left + 8, chart.top + 33, chart.width - 16, 0)
+        col_w = max(90, menu.width // 2)
+        row_h = 22
+        rects: list[tuple[str, pygame.Rect]] = []
+        for index, metric_id in enumerate(EXPEDITION_METRIC_OPTIONS):
+            col = index % 2
+            row = index // 2
+            rects.append((metric_id, pygame.Rect(menu.left + col * col_w, menu.top + row * row_h, col_w, row_h)))
+        return rects
+
+    def _draw_expedition_metric_chart(self, surface: pygame.Surface, rect: pygame.Rect, run, metric_id: str, slot_index: int):
+        pygame.draw.rect(surface, config.PALETTE.black, rect)
+        pygame.draw.rect(surface, config.PALETTE.white, rect, 1)
+        header = self._expedition_metric_header_rect(rect)
+        hovered_header = header.collidepoint(self._mouse_pos())
+        pygame.draw.rect(surface, config.PALETTE.white if hovered_header else config.PALETTE.black, header)
+        pygame.draw.rect(surface, config.PALETTE.white, header, 1)
+        title_color = config.PALETTE.black if hovered_header else config.PALETTE.white
+        title = EXPEDITION_METRIC_LABELS.get(metric_id, metric_id).upper()
+        text = self.fonts["tiny"].render(title + "  V", True, title_color)
+        surface.blit(text, (header.left + 7, header.top + 6))
+
+        rows = run.metric_rows(metric_id) if hasattr(run, "metric_rows") else []
+        y = header.bottom + 12
+        max_value = max((float(row["value"]) for row in rows), default=0.0)
+        hovered_row = None
+        for rank, row in enumerate(rows[:5], start=1):
+            row_rect = pygame.Rect(rect.left + 10, y, rect.width - 20, 34)
+            hovered = row_rect.collidepoint(self._mouse_pos())
+            if hovered:
+                hovered_row = (metric_id, row)
+                pygame.draw.rect(surface, config.PALETTE.white, row_rect, 1)
+            troop = row["troop"]
+            value = float(row["value"])
+            percent = float(row.get("percent", 0.0))
+            name = f"{rank}. {getattr(troop, 'display_name', 'Troop').upper()}"
+            value_text = f"{self._format_metric_value(metric_id, value)}  {int(percent * 100)}%"
+            surface.blit(self.fonts["tiny"].render(name[:18], True, config.PALETTE.white), (row_rect.left + 4, row_rect.top + 2))
+            rendered_value = self.fonts["tiny"].render(value_text, True, config.PALETTE.white)
+            surface.blit(rendered_value, (row_rect.right - rendered_value.get_width() - 4, row_rect.top + 2))
+            bar = pygame.Rect(row_rect.left + 4, row_rect.bottom - 11, row_rect.width - 8, 6)
+            pygame.draw.rect(surface, config.PALETTE.white, bar, 1)
+            fill = bar.copy()
+            fill.width = int(bar.width * (0.0 if max_value <= 0 else min(1.0, value / max_value)))
+            if fill.width > 0:
+                pygame.draw.rect(surface, config.PALETTE.white, fill)
+            y += 39
+        if not rows:
+            empty = self.fonts["tiny"].render("NO DATA", True, config.PALETTE.white)
+            surface.blit(empty, empty.get_rect(center=rect.center))
+        return hovered_row
+
+    def _draw_expedition_metric_dropdown(self, surface: pygame.Surface, chart: pygame.Rect) -> None:
+        options = self._expedition_metric_option_rects(chart)
+        if not options:
+            return
+        bounds = options[0][1].unionall([rect for _metric, rect in options])
+        pygame.draw.rect(surface, config.PALETTE.black, bounds.inflate(6, 6))
+        pygame.draw.rect(surface, config.PALETTE.white, bounds.inflate(6, 6), 1)
+        mouse = self._mouse_pos()
+        for metric_id, rect in options:
+            hovered = rect.collidepoint(mouse)
+            pygame.draw.rect(surface, config.PALETTE.white if hovered else config.PALETTE.black, rect)
+            pygame.draw.rect(surface, config.PALETTE.white, rect, 1)
+            color = config.PALETTE.black if hovered else config.PALETTE.white
+            label = self.fonts["tiny"].render(EXPEDITION_METRIC_LABELS.get(metric_id, metric_id).upper()[:15], True, color)
+            surface.blit(label, (rect.left + 5, rect.top + 6))
+
+    def _format_metric_value(self, metric_id: str, value: float) -> str:
+        if metric_id in {"criticals", "stuns", "abilities_fired", "kills", "deaths"}:
+            return str(int(round(value)))
+        if metric_id in {"dps", "hps"}:
+            return f"{value:0.1f}"
+        return str(int(round(value)))
+
+    def _draw_expedition_metric_tooltip(self, surface: pygame.Surface, bounds: pygame.Rect, hover_data) -> None:
+        metric_id, row = hover_data
+        troop = row["troop"]
+        metrics = row["metrics"]
+        value = float(row["value"])
+        percent = float(row.get("percent", 0.0))
+        lines = [
+            EXPEDITION_METRIC_LABELS.get(metric_id, metric_id).upper(),
+            f"VALUE {self._format_metric_value(metric_id, value)}",
+            f"CONTRIBUTION {int(percent * 100)}%",
+            f"DMG {int(metrics.damage_done)}  TAKEN {int(metrics.damage_taken)}",
+            f"HEAL {int(metrics.healing_done)}  BLOCK {int(metrics.blocks)}",
+            f"CRIT {metrics.criticals}  STUN {metrics.stuns}  AGGRO {int(metrics.aggro)}",
+        ]
+        lines.extend(metrics.ability_summary()[:4])
+        width = 280
+        height = 18 + len(lines) * 17
+        mouse = self._mouse_pos()
+        rect = pygame.Rect(mouse[0] + 16, mouse[1] - 8, width, height)
+        if rect.right > bounds.right - 8:
+            rect.right = mouse[0] - 14
+        if rect.bottom > bounds.bottom - 8:
+            rect.bottom = mouse[1] - 14
+        if rect.top < bounds.top + 8:
+            rect.top = bounds.top + 8
+        pygame.draw.rect(surface, config.PALETTE.black, rect)
+        pygame.draw.rect(surface, config.PALETTE.white, rect, 1)
+        y = rect.top + 8
+        surface.blit(self.fonts["small"].render(getattr(troop, "display_name", "Troop").upper(), True, config.PALETTE.white), (rect.left + 10, y))
+        y += 22
+        for line in lines:
+            surface.blit(self.fonts["tiny"].render(line, True, config.PALETTE.white), (rect.left + 10, y))
+            y += 17
 
     def _draw_hero_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
         self._reset_hero_view_if_context_changed(state)
@@ -2137,6 +2690,9 @@ class HUD:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
         elif getattr(state, "selected_training_grounds", None) is not None:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
+        elif getattr(state, "selected_expedition_campsite", None) is not None:
+            buttons.append(Button(pygame.Rect(x, rect.top + 176, width, 28), "OPEN EXPEDITIONS", "open_context_panel", "expedition"))
+            buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
         elif getattr(state, "selected_hero_hall", None) is not None:
             buttons.append(Button(pygame.Rect(x, rect.top + 176, width, 28), "OPEN HERO HALL", "open_context_panel", "hero"))
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
@@ -2217,6 +2773,8 @@ class HUD:
             self._draw_torch_context(surface, x, y, rect, state.selected_torch, state)
         elif getattr(state, "selected_training_grounds", None):
             self._draw_training_grounds_context(surface, x, y, rect, state.selected_training_grounds, state)
+        elif getattr(state, "selected_expedition_campsite", None):
+            self._draw_expedition_campsite_context(surface, x, y, rect, state.selected_expedition_campsite, state)
         elif getattr(state, "selected_hero_hall", None):
             self._draw_hero_hall_context(surface, x, y, rect, state.selected_hero_hall, state)
         elif state.selected_library:
@@ -2430,6 +2988,24 @@ class HUD:
                 ("RADIUS", str(int(grounds.training_radius))),
                 ("TRAINEES", f"{min(trainees, grounds.max_trainees)}/{grounds.max_trainees}"),
                 ("XP", f"+{grounds.xp_amount}/{grounds.xp_interval:0.0f}S"),
+            ],
+        )
+
+    def _draw_expedition_campsite_context(self, surface: pygame.Surface, x: int, y: int, rect: pygame.Rect, campsite, state) -> None:
+        self._section(surface, "EXPEDITION CAMP", x, y)
+        y += 26
+        ready_groups = sum(1 for index in range(len(getattr(state, "control_groups", []))) if state.control_group_troops(index))
+        active = getattr(state, "expedition_run", None) is not None
+        self._draw_stat_grid(
+            surface,
+            x,
+            y,
+            rect.width - 32,
+            [
+                ("HP", f"{int(campsite.health)}/{int(campsite.max_health)}"),
+                ("GROUPS", str(ready_groups)),
+                ("PARTY", f"{len(getattr(state, 'expedition_setup_party', []))}/5"),
+                ("STATUS", "ACTIVE" if active else "READY"),
             ],
         )
 
@@ -3156,24 +3732,17 @@ class HUD:
         banner.set_alpha(alpha)
         surface.blit(banner, rect)
 
-    def _draw_item_tooltip(self, surface: pygame.Surface, viewport: pygame.Rect, state, mouse_pos: tuple[int, int]) -> None:
-        if self.item_context_menu is not None or self.item_drag is not None:
-            return
-        if self._control_group_slot_at(mouse_pos, viewport, state) is not None:
-            return
-        source = self._item_source_at(mouse_pos, viewport, state)
-        if source is None:
-            return
-        slot = self._slot_for_source(source, state)
-        if slot is None:
-            return
-        definition = ITEM_DEFINITIONS.get(slot.item_id)
-        if definition is None:
-            return
-
+    def _draw_item_definition_tooltip(
+        self,
+        surface: pygame.Surface,
+        bounds: pygame.Rect,
+        definition,
+        mouse_pos: tuple[int, int],
+        quantity: int = 1,
+        source_label: str = "ITEM",
+    ) -> None:
         width = 292
         description_lines = self._wrap(definition.description, self.fonts["tiny"], width - 24)
-        source_label = {"player": "PLAYER", "troop": "TROOP BAG", "equipment": "EQUIPPED"}.get(source[0], "ITEM")
         detail_lines = [f"{definition.rarity.upper()} {definition.type.upper()}", source_label]
         if definition.type == "scroll":
             detail_lines.append(f"USE: LASTS {definition.duration:0.0f}S" if definition.duration > 0 else "USE: INSTANT")
@@ -3183,16 +3752,16 @@ class HUD:
             detail_lines.append("EQUIP: PASSIVE")
         if definition.tags:
             detail_lines.append("TAGS " + ", ".join(tag.upper() for tag in definition.tags[:2]))
-        if slot.quantity > 1:
-            detail_lines.append(f"STACK {slot.quantity}")
+        if quantity > 1:
+            detail_lines.append(f"STACK {quantity}")
         height = 22 + 18 * len(detail_lines) + 16 * len(description_lines) + 24
         rect = pygame.Rect(mouse_pos[0] + 16, mouse_pos[1] - 8, width, height)
-        if rect.right > viewport.right - 8:
+        if rect.right > bounds.right - 8:
             rect.right = mouse_pos[0] - 14
-        if rect.bottom > viewport.bottom - 8:
+        if rect.bottom > bounds.bottom - 8:
             rect.bottom = mouse_pos[1] - 14
-        if rect.top < viewport.top + 8:
-            rect.top = viewport.top + 8
+        if rect.top < bounds.top + 8:
+            rect.top = bounds.top + 8
 
         pygame.draw.rect(surface, config.PALETTE.black, rect)
         pygame.draw.rect(surface, config.PALETTE.white, rect, 1)
@@ -3207,6 +3776,23 @@ class HUD:
         for line in description_lines:
             surface.blit(self.fonts["tiny"].render(line, True, config.PALETTE.text), (rect.left + 12, y))
             y += 16
+
+    def _draw_item_tooltip(self, surface: pygame.Surface, viewport: pygame.Rect, state, mouse_pos: tuple[int, int]) -> None:
+        if self.item_context_menu is not None or self.item_drag is not None or getattr(state, "expedition_recap", None) is not None:
+            return
+        if self._control_group_slot_at(mouse_pos, viewport, state) is not None:
+            return
+        source = self._item_source_at(mouse_pos, viewport, state)
+        if source is None:
+            return
+        slot = self._slot_for_source(source, state)
+        if slot is None:
+            return
+        definition = ITEM_DEFINITIONS.get(slot.item_id)
+        if definition is None:
+            return
+        source_label = {"player": "PLAYER", "troop": "TROOP BAG", "equipment": "EQUIPPED"}.get(source[0], "ITEM")
+        self._draw_item_definition_tooltip(surface, viewport, definition, mouse_pos, slot.quantity, source_label)
 
     def _draw_item_context_menu(self, surface: pygame.Surface, state, bounds: pygame.Rect) -> None:
         rect = self._item_context_rect(state)
@@ -3299,7 +3885,7 @@ class HUD:
             return True
         if pos[1] < config.TOP_BAR_HEIGHT or pos[0] < config.TOOLBAR_WIDTH:
             return True
-        if self.active_panel and not self._using_external_windows() and self._active_panel_rect(screen_rect, viewport).collidepoint(pos):
+        if self.active_panel and (not self._using_external_windows() or self.active_panel == "expedition_metrics") and self._active_panel_rect(screen_rect, viewport).collidepoint(pos):
             return True
         if not state.build_mode and not state.station_mode and self._context_rect(screen_rect, viewport).collidepoint(pos):
             return True

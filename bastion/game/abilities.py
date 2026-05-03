@@ -161,6 +161,8 @@ class GameplayAbility:
         return True
 
     def _notify_activated(self, game) -> None:
+        if hasattr(game, "record_ability_activation"):
+            game.record_ability_activation(self.owner, self)
         component = getattr(self.owner, "abilities", None)
         if component is not None:
             component.on_ability_activated(self, game)
@@ -518,6 +520,501 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
             f"Range {int(float(getattr(self.owner, 'attack_range', 0.0)))}",
             f"Cooldown {_format_seconds(self.attack_cooldown(game))}",
         ]
+
+
+class BossTelegraphedAbility(GameplayAbility):
+    target_radius = 0.0
+
+    def __init__(
+        self,
+        owner=None,
+        *,
+        ability_id: str,
+        name: str,
+        element: str,
+        damage: float,
+        radius: float,
+        cooldown: float,
+        cast_time: float,
+        status_duration: float = 0.0,
+        slow_multiplier: float = 1.0,
+        knockback: float = 0.0,
+    ) -> None:
+        super().__init__(owner, cooldown)
+        self.ability_id = ability_id
+        self.name = name
+        self.element = element
+        self.damage = float(damage)
+        self.radius = float(radius)
+        self.cast_time = max(0.05, float(cast_time))
+        self.status_duration = max(0.0, float(status_duration))
+        self.slow_multiplier = max(0.05, float(slow_multiplier))
+        self.knockback = max(0.0, float(knockback))
+        self.cast_remaining = 0.0
+        self.cast_total = self.cast_time
+        self.cast_pos: pygame.Vector2 | None = None
+
+    @property
+    def casting(self) -> bool:
+        return self.cast_remaining > 0.0 and self.cast_pos is not None
+
+    def effective_cooldown(self, game) -> float:
+        return self.cooldown
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        if self.casting:
+            self.cast_remaining = max(0.0, self.cast_remaining - dt)
+            if self.cast_remaining <= 0.0:
+                self.finish_cast(game)
+            return
+        if self.ready and self.should_auto_activate(game):
+            self.activate(game)
+
+    def should_auto_activate(self, game) -> bool:
+        return self._find_target(game) is not None
+
+    def activate(self, game, target=None) -> bool:
+        if not self.ready:
+            return False
+        target = target or self._find_target(game)
+        if target is None:
+            return False
+        self.cast_pos = pygame.Vector2(getattr(target, "pos", target))
+        self.cast_remaining = self.cast_time
+        self.cast_total = self.cast_time
+        self.cooldown_remaining = self.effective_cooldown(game)
+        self._notify_activated(game)
+        if hasattr(game, "spawn_hit"):
+            game.spawn_hit(getattr(self.owner, "pos", self.cast_pos), 2)
+        return True
+
+    def finish_cast(self, game) -> None:
+        self.cast_remaining = 0.0
+
+    def _find_target(self, game):
+        troops = _nearby_troops(game, self.owner.pos, max(1.0, _owner_range(self.owner, game, 220.0)) + 80.0)
+        candidates = [troop for troop in troops if getattr(troop, "alive", False)]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda troop: troop.pos.distance_to(self.owner.pos))
+
+    def _apply_status(self, target, center: pygame.Vector2) -> None:
+        if self.element == "fire" and self.status_duration > 0 and hasattr(target, "apply_burn"):
+            target.apply_burn(max(1.0, self.damage * 0.22), self.status_duration, self.owner)
+        elif self.element == "ice" and self.status_duration > 0 and hasattr(target, "apply_slow"):
+            target.apply_slow(self.slow_multiplier, self.status_duration, self.slow_multiplier)
+        elif self.element == "lightning" and self.status_duration > 0 and hasattr(target, "apply_stun"):
+            target.apply_stun(self.status_duration)
+        if self.knockback > 0 and hasattr(target, "vel"):
+            direction = target.pos - center
+            if direction.length_squared() == 0:
+                direction = pygame.Vector2(1, 0)
+            target.vel += direction.normalize() * self.knockback
+
+    def detail_lines(self, game=None) -> list[str]:
+        lines = [
+            f"Damage {_format_number(self.damage)} {self.element}",
+            f"Tell {_format_seconds(self.cast_time)}",
+            f"Cooldown {_format_seconds(self.effective_cooldown(game))}",
+        ]
+        if self.radius > 0:
+            lines.insert(1, f"Area {int(self.radius)}")
+        return lines
+
+    def state_label(self, game=None) -> str:
+        if self.casting:
+            return "CAST"
+        return super().state_label(game)
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        if not self.casting or self.cast_pos is None:
+            return
+        progress = 1.0 - self.cast_remaining / max(0.01, self.cast_total)
+        radius = max(10.0, self.radius if self.radius > 0 else self.target_radius)
+        screen = camera.world_to_screen(self.cast_pos, viewport)
+        alpha = int(42 + 118 * progress)
+        draw_circle_alpha(surface, screen, radius * camera.zoom, config.PALETTE.white, alpha, max(1, int(2 * camera.zoom)))
+        draw_circle_alpha(surface, screen, radius * (0.30 + progress * 0.46) * camera.zoom, config.PALETTE.white, int(alpha * 0.55), 1)
+
+
+class BossTelegraphedStrikeAbility(BossTelegraphedAbility):
+    description = "Marks a party member before striking the target area."
+    target_radius = 20.0
+
+    def __init__(self, owner=None, **kwargs) -> None:
+        self.targeting = str(kwargs.pop("targeting", "nearest"))
+        super().__init__(owner, **kwargs)
+
+    def _find_target(self, game):
+        radius = max(1.0, _owner_range(self.owner, game, 230.0)) + 80.0
+        candidates = [troop for troop in _nearby_troops(game, self.owner.pos, radius) if getattr(troop, "alive", False)]
+        if not candidates:
+            return None
+        if self.targeting == "random":
+            return random.choice(candidates)
+        if self.targeting == "weakest":
+            return min(candidates, key=lambda troop: (troop.health / max(1.0, troop.max_health), troop.pos.distance_to(self.owner.pos)))
+        return min(candidates, key=lambda troop: troop.pos.distance_to(self.owner.pos))
+
+    def finish_cast(self, game) -> None:
+        center = pygame.Vector2(self.cast_pos) if self.cast_pos is not None else pygame.Vector2(self.owner.pos)
+        self.cast_pos = None
+        self.cast_remaining = 0.0
+        hit_radius = max(8.0, self.radius)
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(center, "aoe" if hit_radius > 18 else "single", hit_radius)
+        for troop in _nearby_troops(game, center, hit_radius + 24.0):
+            if not getattr(troop, "alive", False) or troop.pos.distance_to(center) > hit_radius + troop.radius:
+                continue
+            game.damage_friendly(troop, self.damage, source_pos=center, element=self.element, source=self.owner)
+            self._apply_status(troop, center)
+
+
+class BossPartyPulseAbility(BossTelegraphedAbility):
+    description = "Telegraphs a radial burst around the boss."
+
+    def should_auto_activate(self, game) -> bool:
+        return any(
+            getattr(troop, "alive", False) and troop.pos.distance_to(self.owner.pos) <= self.radius + troop.radius
+            for troop in _nearby_troops(game, self.owner.pos, self.radius + 32.0)
+        )
+
+    def activate(self, game, target=None) -> bool:
+        if not self.ready or not self.should_auto_activate(game):
+            return False
+        self.cast_pos = pygame.Vector2(self.owner.pos)
+        self.cast_remaining = self.cast_time
+        self.cast_total = self.cast_time
+        self.cooldown_remaining = self.effective_cooldown(game)
+        self._notify_activated(game)
+        return True
+
+    def finish_cast(self, game) -> None:
+        center = pygame.Vector2(self.owner.pos)
+        self.cast_pos = None
+        self.cast_remaining = 0.0
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(center, "aoe", self.radius)
+        for troop in _nearby_troops(game, center, self.radius + 32.0):
+            if not getattr(troop, "alive", False) or troop.pos.distance_to(center) > self.radius + troop.radius:
+                continue
+            game.damage_friendly(troop, self.damage, source_pos=center, element=self.element, source=self.owner)
+            self._apply_status(troop, center)
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        if self.casting:
+            self.cast_pos = pygame.Vector2(self.owner.pos)
+        super().draw_preview(surface, camera, viewport)
+
+
+class BossProjectileAbility(BossTelegraphedAbility):
+    description = "Casts a hostile projectile with optional area and ground effects."
+
+    def __init__(
+        self,
+        owner=None,
+        *,
+        speed: float = 180.0,
+        ground_duration: float = 0.0,
+        burn_dps: float = 0.0,
+        burn_duration: float = 0.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(owner, **kwargs)
+        self.speed = float(speed)
+        self.ground_duration = max(0.0, float(ground_duration))
+        self.burn_dps = max(0.0, float(burn_dps))
+        self.burn_duration = max(0.0, float(burn_duration))
+
+    def finish_cast(self, game) -> None:
+        target_pos = pygame.Vector2(self.cast_pos) if self.cast_pos is not None else pygame.Vector2(self.owner.pos)
+        self.cast_pos = None
+        self.cast_remaining = 0.0
+        from bastion.game.entities import HostileAoeProjectile
+
+        game.enemy_projectiles.append(
+            HostileAoeProjectile(
+                pygame.Vector2(self.owner.pos),
+                target_pos,
+                self.speed,
+                self.damage,
+                self.owner,
+                element=self.element,
+                radius=self.radius,
+                burn_dps=self.burn_dps,
+                burn_duration=self.burn_duration,
+                slow_multiplier=self.slow_multiplier,
+                status_duration=self.status_duration,
+                ground_duration=self.ground_duration,
+            )
+        )
+
+
+class BossRadialProjectileAbility(BossProjectileAbility):
+    description = "Telegraphs and releases hostile projectiles in all directions."
+
+    def __init__(self, owner=None, *, projectiles: int = 8, **kwargs) -> None:
+        super().__init__(owner, **kwargs)
+        self.projectiles = max(1, int(projectiles))
+
+    def should_auto_activate(self, game) -> bool:
+        return any(getattr(troop, "alive", False) for troop in _nearby_troops(game, self.owner.pos, max(1.0, _owner_range(self.owner, game, 260.0))))
+
+    def activate(self, game, target=None) -> bool:
+        if not self.ready or not self.should_auto_activate(game):
+            return False
+        self.cast_pos = pygame.Vector2(self.owner.pos)
+        self.cast_remaining = self.cast_time
+        self.cast_total = self.cast_time
+        self.cooldown_remaining = self.effective_cooldown(game)
+        self._notify_activated(game)
+        return True
+
+    def finish_cast(self, game) -> None:
+        center = pygame.Vector2(self.owner.pos)
+        self.cast_pos = None
+        self.cast_remaining = 0.0
+        from bastion.game.entities import HostileAoeProjectile
+
+        if hasattr(game, "show_damage_impact"):
+            game.show_damage_impact(center, "aoe", max(50.0, self.radius))
+        for index in range(self.projectiles):
+            angle = index / self.projectiles * math.tau
+            direction = pygame.Vector2(math.cos(angle), math.sin(angle))
+            game.enemy_projectiles.append(
+                HostileAoeProjectile(
+                    center + direction * max(8.0, getattr(self.owner, "radius", 12.0)),
+                    center + direction * 420.0,
+                    self.speed,
+                    self.damage,
+                    self.owner,
+                    element=self.element,
+                    radius=self.radius,
+                    burn_dps=self.burn_dps,
+                    burn_duration=self.burn_duration,
+                    slow_multiplier=self.slow_multiplier,
+                    status_duration=self.status_duration,
+                    ground_duration=self.ground_duration,
+                    max_distance=420.0,
+                )
+            )
+
+
+class BossDashAbility(PassiveAbility):
+    ability_id = "boss_dash"
+    name = "Boss Dash"
+    description = "Occasionally repositions away from the party."
+
+    def __init__(
+        self,
+        owner=None,
+        *,
+        ability_id: str = "boss_dash",
+        name: str = "Boss Dash",
+        distance: float = 150.0,
+        cooldown: float = 6.0,
+        trigger_distance: float = 145.0,
+        chance: float = 0.35,
+        teleport: bool = False,
+    ) -> None:
+        super().__init__(owner)
+        self.ability_id = ability_id
+        self.name = name
+        self.distance = float(distance)
+        self.cooldown = float(cooldown)
+        self.cooldown_remaining = random.uniform(0.0, self.cooldown)
+        self.trigger_distance = float(trigger_distance)
+        self.chance = max(0.0, min(1.0, float(chance)))
+        self.teleport = bool(teleport)
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+        if self.cooldown_remaining > 0 or not getattr(self.owner, "alive", False):
+            return
+        target = _nearest_troop(game, self.owner.pos, self.trigger_distance + 80.0)
+        if target is None or target.pos.distance_to(self.owner.pos) > self.trigger_distance + target.radius:
+            return
+        if random.random() > self.chance:
+            self.cooldown_remaining = self.cooldown * 0.45
+            return
+        away = self.owner.pos - target.pos
+        if away.length_squared() == 0:
+            away = pygame.Vector2(1, 0)
+        tangent = pygame.Vector2(-away.y, away.x)
+        direction = (away.normalize() * 0.82 + tangent.normalize() * random.uniform(-0.42, 0.42))
+        if direction.length_squared() == 0:
+            direction = away
+        direction = direction.normalize()
+        if self.teleport:
+            self._teleport(game, direction)
+        else:
+            self.owner.vel += direction * self.distance
+        self.cooldown_remaining = self.cooldown
+        if hasattr(game, "spawn_burst"):
+            game.spawn_burst(self.owner.pos, 10, 84)
+
+    def _teleport(self, game, direction: pygame.Vector2) -> None:
+        destination = pygame.Vector2(self.owner.pos)
+        for scale in (1.0, 0.78, 0.56, 0.34):
+            candidate = self.owner.pos + direction * self.distance * scale
+            if game.grid.circle_clear(candidate, getattr(self.owner, "collision_radius", getattr(self.owner, "radius", 12.0))):
+                destination = candidate
+                break
+        if hasattr(game, "beams"):
+            from bastion.game.entities import Beam
+
+            game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(destination), 0.16, 2))
+        self.owner.pos = destination
+        self.owner.vel.update(0, 0)
+
+    def detail_lines(self, game=None) -> list[str]:
+        verb = "Teleport" if self.teleport else "Dash"
+        return [f"{verb} {int(self.distance)}", f"Cooldown {_format_seconds(self.cooldown)}"]
+
+
+class BossContactBurnPassive(PassiveAbility):
+    ability_id = "boss_contact_burn"
+    name = "Molten Skin"
+    description = "Melee attackers are set on fire."
+
+    def __init__(
+        self,
+        owner=None,
+        *,
+        ability_id: str = "boss_contact_burn",
+        name: str = "Molten Skin",
+        damage_per_second: float = 4.0,
+        duration: float = 3.0,
+        cooldown: float = 0.75,
+        radius: float = 44.0,
+    ) -> None:
+        super().__init__(owner)
+        self.ability_id = ability_id
+        self.name = name
+        self.damage_per_second = float(damage_per_second)
+        self.duration = float(duration)
+        self.cooldown = float(cooldown)
+        self.cooldown_remaining = 0.0
+        self.radius = float(radius)
+
+    def update(self, dt: float, game) -> None:
+        self.cooldown_remaining = max(0.0, self.cooldown_remaining - dt)
+
+    def on_owner_damaged(self, amount: float, source, source_pos: pygame.Vector2 | None, element: str, game) -> None:
+        if amount <= 0 or self.cooldown_remaining > 0 or source is None or not hasattr(source, "apply_burn"):
+            return
+        if not getattr(source, "alive", False) or source.pos.distance_to(self.owner.pos) > self.radius + getattr(source, "radius", 0.0):
+            return
+        source.apply_burn(self.damage_per_second, self.duration, self.owner)
+        self.cooldown_remaining = self.cooldown
+        if hasattr(game, "beams"):
+            from bastion.game.entities import Beam
+
+            game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(source.pos), 0.12, 1))
+
+    def detail_lines(self, game=None) -> list[str]:
+        return [f"Burn {_format_number(self.damage_per_second)}/s", f"Duration {_format_seconds(self.duration)}"]
+
+
+class BossSlowAuraPassive(PassiveAbility):
+    ability_id = "boss_slowing_presence"
+    name = "Slowing Presence"
+    description = "Slows troops that stay too close."
+
+    def __init__(
+        self,
+        owner=None,
+        *,
+        ability_id: str = "boss_slowing_presence",
+        name: str = "Slowing Presence",
+        radius: float = 140.0,
+        slow_multiplier: float = 0.72,
+        attack_slow_multiplier: float = 0.84,
+        interval: float = 0.25,
+    ) -> None:
+        super().__init__(owner)
+        self.ability_id = ability_id
+        self.name = name
+        self.radius = float(radius)
+        self.slow_multiplier = float(slow_multiplier)
+        self.attack_slow_multiplier = float(attack_slow_multiplier)
+        self.interval = max(0.05, float(interval))
+        self.timer = random.uniform(0.0, self.interval)
+
+    def update(self, dt: float, game) -> None:
+        self.timer -= dt
+        if self.timer > 0 or not getattr(self.owner, "alive", False):
+            return
+        self.timer += self.interval
+        for troop in _nearby_troops(game, self.owner.pos, self.radius + 24.0):
+            if getattr(troop, "alive", False) and troop.pos.distance_to(self.owner.pos) <= self.radius + troop.radius and hasattr(troop, "apply_slow"):
+                troop.apply_slow(self.slow_multiplier, self.interval * 2.4, self.attack_slow_multiplier)
+
+    def detail_lines(self, game=None) -> list[str]:
+        slow_pct = int((1.0 - self.slow_multiplier) * 100)
+        return [f"Slow {slow_pct}%", f"Radius {int(self.radius)}"]
+
+    def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        screen = camera.world_to_screen(self.owner.pos, viewport)
+        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 12, 1)
+
+
+def create_boss_ability_from_definition(spec, owner=None) -> GameplayAbility:
+    values = dict(getattr(spec, "values", {}))
+    values.setdefault("ability_id", getattr(spec, "ability_id", "boss_ability"))
+    values.setdefault("name", getattr(spec, "name", "Boss Ability"))
+    kind = str(getattr(spec, "kind", values.get("kind", "telegraphed_strike")))
+    if kind == "telegraphed_strike":
+        return BossTelegraphedStrikeAbility(owner, **_boss_cast_values(values))
+    if kind == "party_pulse":
+        return BossPartyPulseAbility(owner, **_boss_cast_values(values))
+    if kind == "projectile":
+        return BossProjectileAbility(owner, **_boss_projectile_values(values))
+    if kind == "radial_projectiles":
+        return BossRadialProjectileAbility(owner, **_boss_projectile_values(values))
+    if kind == "dash":
+        return BossDashAbility(owner, **_boss_passive_values(values))
+    if kind == "contact_burn":
+        return BossContactBurnPassive(owner, **_boss_passive_values(values))
+    if kind == "slow_aura":
+        return BossSlowAuraPassive(owner, **_boss_passive_values(values))
+    raise KeyError(f"Unknown boss ability kind '{kind}'.")
+
+
+def _boss_cast_values(values: dict) -> dict:
+    allowed = {
+        "ability_id",
+        "name",
+        "element",
+        "damage",
+        "radius",
+        "cooldown",
+        "cast_time",
+        "targeting",
+        "status_duration",
+        "slow_multiplier",
+        "knockback",
+    }
+    result = {key: values[key] for key in allowed if key in values}
+    result.setdefault("element", "physical")
+    result.setdefault("damage", 1.0)
+    result.setdefault("radius", 0.0)
+    result.setdefault("cooldown", 1.0)
+    result.setdefault("cast_time", 0.5)
+    return result
+
+
+def _boss_projectile_values(values: dict) -> dict:
+    result = _boss_cast_values(values)
+    for key in ("speed", "ground_duration", "burn_dps", "burn_duration", "projectiles"):
+        if key in values:
+            result[key] = values[key]
+    return result
+
+
+def _boss_passive_values(values: dict) -> dict:
+    return {key: value for key, value in values.items() if key not in {"kind"}}
 
 
 class TowerProjectileAttackAbility(CooldownDrivenAttack):
@@ -1618,6 +2115,8 @@ class ElectricJoltPassive(PassiveAbility):
         self.recovery_remaining = self.recovery
         for enemy in affected:
             enemy.apply_stun(self.stun_duration)
+            if hasattr(game, "record_stun"):
+                game.record_stun(self.owner, enemy, self.stun_duration)
             if hasattr(game, "beams"):
                 game.beams.append(Beam(pygame.Vector2(self.owner.pos), pygame.Vector2(enemy.pos), 0.12, 1))
         if hasattr(game, "show_damage_impact"):
@@ -1659,6 +2158,8 @@ class FrostNovaAbility(GameplayAbility):
                 direction = pygame.Vector2(1, 0)
             enemy.vel += direction.normalize() * (self.knockback / max(0.5, float(getattr(enemy, "mass", 1.0))))
             enemy.apply_stun(self.stun_duration)
+            if hasattr(game, "record_stun"):
+                game.record_stun(self.owner, enemy, self.stun_duration)
             enemy.apply_slow(0.35, self.stun_duration, 0.55)
         if hasattr(game, "show_damage_impact"):
             game.show_damage_impact(self.owner.pos, "aoe", self.radius)
@@ -2386,6 +2887,18 @@ def _nearby_troops(game, pos: pygame.Vector2, radius: float):
     if hasattr(game, "nearby_troops"):
         return game.nearby_troops(pos, radius)
     return getattr(game, "troops", [])
+
+
+def _nearest_troop(game, pos: pygame.Vector2, radius: float):
+    point = pygame.Vector2(pos)
+    candidates = [
+        troop
+        for troop in _nearby_troops(game, point, radius)
+        if getattr(troop, "alive", False) and troop.pos.distance_to(point) <= radius + getattr(troop, "radius", 0.0)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda troop: troop.pos.distance_to(point))
 
 
 def _enemies_in_cone(game, owner, target, reach: float, angle_degrees: float):

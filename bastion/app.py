@@ -90,10 +90,16 @@ class BastionApp:
                 self.consume_camera_focus()
                 self.update_hover_audio()
                 self.audio.update_music()
-                if not self.pause_menu.open:
+                if not self.pause_menu.open and self.state.expedition_run is None:
                     self.handle_keyboard_pan(raw_dt)
                 sim_dt = min(0.05, raw_dt) * self.state.time_scale
-                self.state.update(sim_dt)
+                if self.state.expedition_run is not None:
+                    if not self.pause_menu.open and not self.state.paused:
+                        self.state.expedition_run.update(sim_dt, pygame.key.get_pressed(), pygame.mouse.get_pos(), self.viewport)
+                        if self.state.expedition_run.finished_result is not None:
+                            self.state.finish_expedition_run(self.state.expedition_run.finished_result)
+                else:
+                    self.state.update(sim_dt)
                 self.draw()
                 frames += 1
                 if max_frames is not None and frames >= max_frames:
@@ -108,8 +114,11 @@ class BastionApp:
         self.hud.layout_buttons(self.screen_rect, viewport, self.state)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.running = False
-                self.hud.close_all_windows()
+                if self.state.expedition_run is not None:
+                    self.state.abort_expedition_as_loss()
+                else:
+                    self.running = False
+                    self.hud.close_all_windows()
             elif self.hud.handle_external_event(event, self.state):
                 continue
             elif event.type == pygame.VIDEORESIZE:
@@ -132,6 +141,8 @@ class BastionApp:
                 if viewport.collidepoint(mouse):
                     self.camera.zoom_at(1.1 if event.y > 0 else 0.9, mouse, viewport)
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                if self.state.expedition_run is not None and self.state.expedition_run.handle_event(event, viewport):
+                    continue
                 if event.button == 1 and event.pos[1] < config.TITLE_BAR_HEIGHT:
                     self.handle_title_bar_click(event.pos)
                     continue
@@ -187,8 +198,11 @@ class BastionApp:
             if not rect.collidepoint(pos):
                 continue
             if name == "close":
-                self.running = False
-                self.hud.close_all_windows()
+                if self.state.expedition_run is not None:
+                    self.state.abort_expedition_as_loss()
+                else:
+                    self.running = False
+                    self.hud.close_all_windows()
             elif name == "minimize":
                 pygame.display.iconify()
             elif name == "maximize":
@@ -419,6 +433,7 @@ class BastionApp:
     def world_hover_target_at(self, pos: tuple[int, int], viewport: pygame.Rect):
         if (
             not viewport.collidepoint(pos)
+            or self.state.expedition_run is not None
             or self.state.round_events.awaiting_choice
             or self.state.build_mode
             or self.state.station_mode
@@ -431,7 +446,7 @@ class BastionApp:
         cell = self.state.grid.cell_from_world(world)
         structure = self.state.grid.towers.get(cell)
         if getattr(structure, "alive", False) and getattr(structure, "target_class", "") != "core":
-            if getattr(structure, "kind", "") in {"archer", "cannon", "wizard", "barracks", "house", "extractor", "torch", "training_grounds", "research", "library", "shield_generator"}:
+            if getattr(structure, "kind", "") in {"archer", "cannon", "wizard", "barracks", "house", "extractor", "torch", "training_grounds", "expedition_campsite", "research", "library", "shield_generator"}:
                 return ("structure", id(structure))
         if cell in self.state.grid.walls:
             return ("wall", cell)
@@ -440,9 +455,12 @@ class BastionApp:
     def draw(self) -> None:
         self.screen.fill(config.PALETTE.bg)
         viewport = self.viewport
-        self.camera.clamp_to_world(viewport)
-        self.state.draw_world(self.screen, self.camera, viewport, self.fonts, pygame.mouse.get_pos(), self.hover_audio_target)
-        self.draw_selection_box(viewport)
+        if self.state.expedition_run is not None:
+            self.state.expedition_run.draw(self.screen, viewport, self.fonts, pygame.mouse.get_pos())
+        else:
+            self.camera.clamp_to_world(viewport)
+            self.state.draw_world(self.screen, self.camera, viewport, self.fonts, pygame.mouse.get_pos(), self.hover_audio_target)
+            self.draw_selection_box(viewport)
         self.hud.draw(self.screen, self.screen_rect, viewport, self.state)
         self.pause_menu.draw(self.screen, self.screen_rect, self.audio)
         pygame.display.flip()

@@ -10,6 +10,7 @@ from bastion.game.resources import MineralExtractor
 from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUEPRINTS, stats_for
 from bastion.game.units import (
     Barracks,
+    ExpeditionCampsite,
     HOUSE_CAPACITY,
     HeroHall,
     House,
@@ -152,6 +153,12 @@ BUILD_CATEGORIES = (
         "Long-term growth buildings that convert time and resources into stronger runs.",
         40,
     ),
+    BuildCategory(
+        "expeditions",
+        "Expeditions",
+        "Party-based dungeon runs that risk troops for staged rewards.",
+        50,
+    ),
 )
 
 
@@ -249,6 +256,19 @@ BUILD_MENU_ENTRIES = (
             f"+{TrainingGrounds.xp_amount} XP",
             f"{TrainingGrounds.xp_interval:0.1f}s interval",
             f"{TrainingGrounds.max_trainees} troops",
+        ),
+    ),
+    BuildMenuEntry(
+        "expedition_campsite",
+        "Expedition Campsite",
+        "expeditions",
+        "Registers a control group for a separate dungeon expedition.",
+        (),
+        (
+            f"HP {int(ExpeditionCampsite.max_health)}",
+            "Party size 1-5",
+            "Permanent death",
+            "Unlocks Expedition toolbar",
         ),
     ),
     BuildMenuEntry(

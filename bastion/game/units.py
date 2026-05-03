@@ -561,6 +561,69 @@ class TrainingGrounds:
         pygame.draw.rect(surface, config.PALETTE.white, fill)
 
 
+class ExpeditionCampsite:
+    kind = "expedition_campsite"
+    display_name = "Expedition Campsite"
+    target_class = "structure"
+    radius = config.TILE_SIZE * 0.55
+    max_health = 225.0
+
+    def __init__(self, cell: tuple[int, int], grid) -> None:
+        self.cell = cell
+        self.pos = grid.world_center(cell)
+        self.health = self.max_health
+        self.alive = True
+        self.pulse = random.random() * math.tau
+
+    def update(self, dt: float, game) -> None:
+        return
+
+    def take_damage(self, amount: float) -> bool:
+        if not self.alive:
+            return False
+        self.health -= amount
+        return self.health <= 0
+
+    def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
+        center = camera.world_to_screen(self.pos, viewport)
+        size = int(config.TILE_SIZE * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = center
+        fill, mark = hover_feedback.inverted_pair(hovered)
+        pygame.draw.rect(surface, fill, rect)
+        pygame.draw.rect(surface, mark, rect, max(1, int(2 * camera.zoom)))
+
+        base_y = rect.top + size * 0.65
+        tent = [
+            (rect.left + size * 0.18, base_y),
+            (rect.centerx, rect.top + size * 0.18),
+            (rect.right - size * 0.18, base_y),
+        ]
+        pygame.draw.polygon(surface, mark, tent, max(1, int(2 * camera.zoom)))
+        flap = [
+            (rect.centerx, rect.top + size * 0.34),
+            (rect.centerx - size * 0.12, base_y),
+            (rect.centerx + size * 0.12, base_y),
+        ]
+        pygame.draw.polygon(surface, mark, flap, max(1, int(camera.zoom)))
+        phase = pygame.time.get_ticks() * 0.006 + self.pulse
+        ring = max(6, int(size * 0.29))
+        for index in range(5):
+            angle = -math.pi / 2 + index * math.tau / 5 + math.sin(phase) * 0.04
+            orb = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * ring
+            pygame.draw.circle(surface, mark, orb, max(1, int(2.2 * camera.zoom)), max(1, int(camera.zoom)))
+
+        if selected:
+            draw_circle_alpha(surface, center, size * 0.76, config.PALETTE.white, 58, 1)
+
+        if self.health < self.max_health:
+            bar = pygame.Rect(rect.left, rect.top - 6, rect.width, 3)
+            pygame.draw.rect(surface, config.PALETTE.black, bar)
+            fill_rect = bar.copy()
+            fill_rect.width = int(bar.width * max(0.0, self.health / self.max_health))
+            pygame.draw.rect(surface, config.PALETTE.white, fill_rect)
+
+
 class HeroHall:
     kind = "hero_hall"
     display_name = "Hero Hall"
@@ -1008,6 +1071,14 @@ class Troop:
         self.hit_flash = 0.0
         self.taunt_pulse = 0.0
         self.stealth_time = 0.0
+        self.burn_time = 0.0
+        self.burn_dps = 0.0
+        self.burn_owner = None
+        self.slow_time = 0.0
+        self.slow_multiplier = 1.0
+        self.attack_slow_time = 0.0
+        self.attack_slow_multiplier = 1.0
+        self.stun_time = 0.0
         self.swing_time = 0.0
         self.swing_duration = {"grunt": 0.18, "warrior": 0.24, "archer": 0.22, "cleric": 0.20, "engineer": 0.22, "wizard": 0.24}.get(kind, 0.20)
         self.swing_dir = pygame.Vector2(1, 0)
@@ -1395,6 +1466,25 @@ class Troop:
             return True
         return False
 
+    def apply_burn(self, dps: float, duration: float, owner=None) -> None:
+        if dps <= 0 or duration <= 0:
+            return
+        self.burn_dps = max(self.burn_dps, float(dps))
+        self.burn_time = max(self.burn_time, float(duration))
+        self.burn_owner = owner
+
+    def apply_slow(self, multiplier: float, duration: float, attack_multiplier: float | None = None) -> None:
+        if duration <= 0:
+            return
+        self.slow_multiplier = min(self.slow_multiplier, max(0.05, float(multiplier)))
+        self.slow_time = max(self.slow_time, float(duration))
+        if attack_multiplier is not None:
+            self.attack_slow_multiplier = min(self.attack_slow_multiplier, max(0.05, float(attack_multiplier)))
+            self.attack_slow_time = max(self.attack_slow_time, float(duration))
+
+    def apply_stun(self, duration: float) -> None:
+        self.stun_time = max(self.stun_time, max(0.0, float(duration)))
+
     def on_damage_dealt(self, amount: float, target, game) -> None:
         if amount <= 0 or not self.alive:
             return
@@ -1413,13 +1503,33 @@ class Troop:
     def update(self, dt: float, game) -> None:
         if not self.alive:
             return
+        if self.burn_time > 0:
+            self.burn_time = max(0.0, self.burn_time - dt)
+            game.damage_friendly(self, self.burn_dps * dt, source=self.burn_owner, source_pos=getattr(self.burn_owner, "pos", None), element="fire")
+            if not self.alive:
+                return
+        if self.slow_time > 0:
+            self.slow_time = max(0.0, self.slow_time - dt)
+        else:
+            self.slow_multiplier = 1.0
+        if self.attack_slow_time > 0:
+            self.attack_slow_time = max(0.0, self.attack_slow_time - dt)
+        else:
+            self.attack_slow_multiplier = 1.0
+        self.stun_time = max(0.0, self.stun_time - dt)
         self.update_item_buffs(dt, game)
         self.hit_flash = max(0.0, self.hit_flash - dt * 5.5)
         self.taunt_pulse = max(0.0, self.taunt_pulse - dt)
         self.support_pulse = max(0.0, self.support_pulse - dt)
         self.swing_time = max(0.0, self.swing_time - dt)
-        self.cooldown -= dt
+        self.cooldown -= dt * self.attack_slow_multiplier
         self.abilities.update(dt, game)
+
+        if self.stun_time > 0:
+            self.target = None
+            self._decelerate(dt)
+            self._finish_movement(dt, game)
+            return
 
         if self.harvester is not None:
             self.harvester.update(dt, game)
@@ -1435,18 +1545,25 @@ class Troop:
             self._finish_movement(dt, game)
             return
 
+        expedition_controlled = bool(getattr(game, "expedition_movement_authoritative", False) and getattr(game, "expedition_player_moving", False))
         self.target = self._choose_target(game)
         stats = self.stats(game)
         if self.target is not None:
             attack_range = float(stats["range"])
             if self.melee.can_reach(self.target, attack_range):
-                self._decelerate(dt)
+                if not expedition_controlled:
+                    self._decelerate(dt)
                 self._attack(game, stats)
-            else:
+            elif not expedition_controlled:
                 self._move_towards(self.target.pos, dt, game, arrival_radius=self.melee.attack_distance(self.target, attack_range))
-        elif self.pos.distance_to(self.station) > 8:
+        if expedition_controlled:
+            if self.pos.distance_to(self.station) > 5:
+                self._move_towards(self.station, dt, game, arrival_radius=5.0, speed_multiplier=1.28, separation_strength=0.32)
+            else:
+                self._decelerate(dt)
+        elif self.target is None and self.pos.distance_to(self.station) > 8:
             self._move_towards(self.station, dt, game, arrival_radius=8.0)
-        else:
+        elif self.target is None:
             self._decelerate(dt)
 
         self._finish_movement(dt, game)
@@ -1494,7 +1611,7 @@ class Troop:
         neighbors = None
         if separation_strength > 0:
             neighbors = (lambda: game.nearby_troops(self.pos, 52)) if hasattr(game, "nearby_troops") else game.troops
-        move_speed = self.speed * self.passive_multiplier("movement_speed_multiplier") * self.hero_multiplier("movement_speed_multiplier")
+        move_speed = self.speed * self.slow_multiplier * self.passive_multiplier("movement_speed_multiplier") * self.hero_multiplier("movement_speed_multiplier")
         self.navigator.steer_to(
             target,
             dt,
@@ -1556,6 +1673,14 @@ class Troop:
         if self.support_pulse > 0:
             t = self.support_pulse / 0.35
             draw_circle_alpha(surface, screen, (r + 18 * (1 - t)) * camera.zoom, config.PALETTE.white, int(88 * t), 1)
+        if self.burn_time > 0:
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.02)
+            draw_circle_alpha(surface, screen, (r + 5 + pulse * 4) * camera.zoom, config.PALETTE.white, 48, 1)
+        if self.slow_time > 0 or self.attack_slow_time > 0:
+            draw_circle_alpha(surface, screen, (r + 8) * camera.zoom, config.PALETTE.white, 36, 1)
+        if self.stun_time > 0:
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.035)
+            draw_circle_alpha(surface, screen, (r + 12 + pulse * 3) * camera.zoom, config.PALETTE.white, 62, 1)
         if self.stealth_time > 0:
             pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.018)
             draw_circle_alpha(surface, screen, (r + 9 + pulse * 3) * camera.zoom, config.PALETTE.white, 38, 1)
