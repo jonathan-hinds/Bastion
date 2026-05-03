@@ -1,0 +1,36 @@
+BASTION OF THE CORE
+
+In Bastion of the Core, there are no set paths. You are the architect of your own survival. Monsters swarm toward the Town Hall, and you must use your gold to construct walls and towers to stop them.
+
+CORE GAMEPLAY
+
+No Lanes: You place walls anywhere to create your own maze and reroute the enemy.
+
+Earn Gold: Kill enemies to gain currency for building and upgrading.
+
+XP & Leveling: Towers gain experience as they get kills, automatically improving their fire rate, damage, and range.
+
+THE TOWERS
+
+Archer: Long range, fast fire rate, low damage.
+
+Cannon: Short range, slow fire rate, high damage.
+
+Wizard: Mid range, medium speed, very high damage.
+
+UPGRADE PATHS
+
+Archer: Specializes into Flaming Archer (burn damage) or Quick Draw (extreme speed).
+
+Wizard: Specializes into Lightning Wizard (chain damage) or Ice Wizard (slows enemies).
+
+Cannon: Specializes into Barrage Cannon (rapid fire) or Mortar Cannon (massive AOE).
+
+THE ENEMIES
+Waves increase in difficulty, featuring three enemy types:
+
+Small: Very fast with low health.
+
+Medium: Average speed and health.
+
+Large: Very slow but with massive health pools.

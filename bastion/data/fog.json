@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "global": {
+    "enabled": true,
+    "reveal_speed": 4.8,
+    "hide_speed": 6.5,
+    "visibility_threshold": 0.18,
+    "explored_threshold": 0.16,
+    "source_interval": 0.08
+  },
+  "profiles": {
+    "core": {
+      "radius": 390,
+      "hardness": 0.72
+    },
+    "troop": {
+      "radius": 260,
+      "hardness": 0.68
+    },
+    "worker": {
+      "radius": 245,
+      "hardness": 0.68
+    },
+    "support": {
+      "radius": 255,
+      "hardness": 0.68
+    },
+    "tower": {
+      "radius": 230,
+      "hardness": 0.70
+    },
+    "structure": {
+      "radius": 200,
+      "hardness": 0.72
+    },
+    "extractor": {
+      "radius": 185,
+      "hardness": 0.72
+    },
+    "torch": {
+      "radius": 310,
+      "hardness": 0.64
+    },
+    "training_grounds": {
+      "radius": 255,
+      "hardness": 0.68
+    },
+    "shield_generator": {
+      "radius": 260,
+      "hardness": 0.68
+    }
+  }
+}

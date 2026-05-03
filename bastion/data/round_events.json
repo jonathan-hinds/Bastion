@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "settings": {
+    "chance_between_nights": 0.45,
+    "choices": 3
+  },
+  "events": [
+    {
+      "id": "doubling_horde",
+      "title": "Doubling Horde",
+      "description": "All future nights spawn twice as many enemies.",
+      "omens": [
+        "Your wish is your destiny.",
+        "The road grows teeth behind you.",
+        "Every shadow learns to walk twice.",
+        "A thousand footsteps answer one prayer."
+      ],
+      "repeatable": true,
+      "effect": {
+        "type": "scale_future_night_enemies",
+        "multiplier": 2.0
+      }
+    },
+    {
+      "id": "second_core",
+      "title": "Second Core",
+      "description": "A new core appears in a random open area. Losing any core ends the run.",
+      "omens": [
+        "The heart divides and calls it mercy.",
+        "A second pulse wakes under cold stone.",
+        "One throne was never enough.",
+        "The mirror keeps breathing."
+      ],
+      "repeatable": true,
+      "effect": {
+        "type": "add_random_core",
+        "health": 500
+      }
+    },
+    {
+      "id": "gold_halved",
+      "title": "Gold Tithe",
+      "description": "Lose half of your current gold.",
+      "omens": [
+        "The coin remembers its first owner.",
+        "Half the sun is owed below.",
+        "Your purse kneels before the dark.",
+        "Silver leaves by the door it entered."
+      ],
+      "repeatable": true,
+      "effect": {
+        "type": "lose_gold_fraction",
+        "fraction": 0.5
+      }
+    },
+    {
+      "id": "broken_walls",
+      "title": "Broken Walls",
+      "description": "Half of all walls are destroyed at random.",
+      "omens": [
+        "Stone dreams of being dust.",
+        "The mortar forgets its vows.",
+        "A wall is only a delayed apology.",
+        "The old teeth loosen in the jaw."
+      ],
+      "repeatable": true,
+      "effect": {
+        "type": "destroy_wall_fraction",
+        "fraction": 0.5
+      }
+    },
+    {
+      "id": "blood_price",
+      "title": "Blood Price",
+      "description": "Skip the next night and gain its dawn gold, but all friendly troops die.",
+      "omens": [
+        "The quiet comes hungry.",
+        "A saved hour asks for names.",
+        "Peace arrives wearing borrowed faces.",
+        "The bell does not ring for the living."
+      ],
+      "repeatable": true,
+      "effect": {
+        "type": "skip_next_night_kill_troops"
+      }
+    }
+  ]
+}

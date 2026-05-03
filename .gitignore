@@ -1,0 +1,51 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-build/
+venv/
+env/
+ENV/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# PyInstaller runtime/build leftovers
+bastion_crash.log
+*.manifest
+
+# Local editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment/config files
+.env
+.env.*
+
+# Generated audio/editor sidecars and local recordings
+*.asd
+recordings/
+Recordings/
+Recording/recordings/
+Recording/Recordings/
+Recording/*.wav
+
+# Release archives built locally
+*.zip

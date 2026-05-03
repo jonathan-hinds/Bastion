@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "initial_camps": 22,
+  "spawn": {
+    "min_core_distance": 920,
+    "min_camp_distance": 430,
+    "max_attempts": 1600
+  },
+  "respawn": {
+    "min_seconds": 120,
+    "max_seconds": 180,
+    "blocked_retry_seconds": 8,
+    "safe_radius": 310
+  },
+  "templates": [
+    {
+      "id": "raider_patrol",
+      "weight": 4,
+      "count_min": 3,
+      "count_max": 6,
+      "cluster_radius": 92,
+      "patrol_radius": 220,
+      "leash_radius": 460,
+      "enemy_weights": {
+        "small": 5,
+        "medium": 2,
+        "ranged": 1
+      }
+    },
+    {
+      "id": "revenant_hold",
+      "weight": 3,
+      "count_min": 4,
+      "count_max": 8,
+      "cluster_radius": 110,
+      "patrol_radius": 150,
+      "leash_radius": 420,
+      "enemy_weights": {
+        "medium": 5,
+        "large": 1,
+        "ranged": 1
+      }
+    },
+    {
+      "id": "warband",
+      "weight": 2,
+      "count_min": 6,
+      "count_max": 10,
+      "cluster_radius": 135,
+      "patrol_radius": 250,
+      "leash_radius": 520,
+      "enemy_weights": {
+        "small": 3,
+        "medium": 4,
+        "large": 1,
+        "ranged": 2
+      }
+    }
+  ]
+}

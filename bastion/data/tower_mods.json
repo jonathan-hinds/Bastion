@@ -1,0 +1,77 @@
+[
+  {
+    "id": "exp_share",
+    "name": "Exp Share",
+    "description": "If any tower in a connected tower group has this mod, every tower in that group gains full XP when one gets a kill.",
+    "xp_cost": 60,
+    "effects": {
+      "xp_share": true
+    }
+  },
+  {
+    "id": "scatter",
+    "name": "Scatter",
+    "description": "This tower fires twice as many projectiles, each dealing half damage.",
+    "xp_cost": 75,
+    "effects": {
+      "projectile_count_multiplier": 2,
+      "damage_multiplier": 0.5
+    }
+  },
+  {
+    "id": "life_link",
+    "name": "Life Link",
+    "description": "This tower gains bonus maximum HP equal to adjacent towers' base maximum HP.",
+    "xp_cost": 70,
+    "effects": {
+      "life_link": true
+    }
+  },
+  {
+    "id": "silence_specialist",
+    "name": "Silence Specialist",
+    "description": "This tower creates half as much aggro when damaging enemies.",
+    "xp_cost": 65,
+    "effects": {
+      "aggro_multiplier": 0.5
+    }
+  },
+  {
+    "id": "hunker_down",
+    "name": "Hunker Down",
+    "description": "This tower doubles fire rate but halves attack range.",
+    "xp_cost": 85,
+    "effects": {
+      "fire_rate_multiplier": 2.0,
+      "range_multiplier": 0.5
+    }
+  },
+  {
+    "id": "noisy",
+    "name": "Noisy",
+    "description": "This tower constantly creates high threat to enemies inside its attack range.",
+    "xp_cost": 70,
+    "effects": {
+      "passive_threat_per_second": 42.0,
+      "passive_threat_interval": 0.45
+    }
+  },
+  {
+    "id": "air_support",
+    "name": "Air Support",
+    "description": "This tower prioritizes ranged enemies before other targets.",
+    "xp_cost": 80,
+    "effects": {
+      "target_ranged_priority": true
+    }
+  },
+  {
+    "id": "cover_fire",
+    "name": "Cover Fire",
+    "description": "Friendly troops inside this tower's attack range create no incidental aggro from damage, healing, or repairs.",
+    "xp_cost": 90,
+    "effects": {
+      "suppress_troop_aggro": true
+    }
+  }
+]

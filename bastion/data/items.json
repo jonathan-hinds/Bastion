@@ -1,0 +1,250 @@
+{
+  "items": [
+    {
+      "id": "scroll_clockwork_spires",
+      "name": "Scroll of Clockwork Spires",
+      "type": "scroll",
+      "glyph": "SPD",
+      "description": "All towers fire 50% faster for 60 seconds.",
+      "duration": 60.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "tower_fire_rate_multiplier": 1.5
+      }
+    },
+    {
+      "id": "scroll_split_stone",
+      "name": "Scroll of Split Stone",
+      "type": "scroll",
+      "glyph": "DMG",
+      "description": "All towers deal 50% more damage for 60 seconds.",
+      "duration": 60.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "tower_damage_multiplier": 1.5
+      }
+    },
+    {
+      "id": "scroll_mended_ramparts",
+      "name": "Scroll of Mended Ramparts",
+      "type": "scroll",
+      "glyph": "HP",
+      "description": "Heal all towers and buildings to full health.",
+      "duration": 0.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "heal_towers_buildings": true
+      }
+    },
+    {
+      "id": "scroll_remembered_siege",
+      "name": "Scroll of Remembered Siege",
+      "type": "scroll",
+      "glyph": "XP",
+      "description": "All towers gain 50 to 100 experience.",
+      "duration": 0.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "tower_xp_min": 50,
+        "tower_xp_max": 100
+      }
+    },
+    {
+      "id": "scroll_borrowed_heartbeats",
+      "name": "Scroll of Borrowed Heartbeats",
+      "type": "scroll",
+      "glyph": "CD",
+      "description": "All troop cooldowns are reduced by 50% for 60 seconds.",
+      "duration": 60.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "troop_cooldown_multiplier": 0.5
+      }
+    },
+    {
+      "id": "scroll_iron_hands",
+      "name": "Scroll of Iron Hands",
+      "type": "scroll",
+      "glyph": "DMG",
+      "description": "All troops deal 50% more damage for 60 seconds.",
+      "duration": 60.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "troop_damage_multiplier": 1.5
+      }
+    },
+    {
+      "id": "scroll_pale_aegis",
+      "name": "Scroll of the Pale Aegis",
+      "type": "scroll",
+      "glyph": "INV",
+      "description": "All troops become invincible for 60 seconds.",
+      "duration": 60.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "troop_invincible": true
+      }
+    },
+    {
+      "id": "scroll_veteran_echoes",
+      "name": "Scroll of Veteran Echoes",
+      "type": "scroll",
+      "glyph": "XP",
+      "description": "All troops gain 50 to 100 experience.",
+      "duration": 0.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "troop_xp_min": 50,
+        "troop_xp_max": 100
+      }
+    },
+    {
+      "id": "scroll_silent_mercy",
+      "name": "Scroll of Silent Mercy",
+      "type": "scroll",
+      "glyph": "HP",
+      "description": "Heal all troops to full health.",
+      "duration": 0.0,
+      "weight": 1.0,
+      "stack_limit": 9,
+      "effects": {
+        "heal_troops": true
+      }
+    },
+    {
+      "id": "healing_potion",
+      "name": "Healing Potion",
+      "type": "consumable",
+      "rarity": "common",
+      "glyph": "HP",
+      "tags": ["item.consumable", "effect.death_save", "effect.heal"],
+      "description": "A carried potion. If the troop would die, it is consumed and restores 100 health.",
+      "duration": 0.0,
+      "weight": 0.0,
+      "drop_weight": 8.0,
+      "stack_limit": 5,
+      "effects": {
+        "death_save_heal": 100,
+        "instant_heal": 100
+      }
+    },
+    {
+      "id": "fine_meat",
+      "name": "Fine Meat",
+      "type": "consumable",
+      "rarity": "common",
+      "glyph": "RGN",
+      "tags": ["item.consumable", "effect.regeneration"],
+      "description": "When consumed by a troop, regenerates 1% of maximum HP every second for 1 minute.",
+      "duration": 60.0,
+      "weight": 0.0,
+      "drop_weight": 7.0,
+      "stack_limit": 5,
+      "effects": {
+        "regenerate_hp_percent_per_second": 0.01
+      }
+    },
+    {
+      "id": "delicious_meat",
+      "name": "Delicious Meat",
+      "type": "consumable",
+      "rarity": "uncommon",
+      "glyph": "XP",
+      "tags": ["item.consumable", "effect.experience"],
+      "description": "When consumed by a troop, increases experience gained by 50% for 1 minute.",
+      "duration": 60.0,
+      "weight": 0.0,
+      "drop_weight": 3.6,
+      "stack_limit": 3,
+      "effects": {
+        "experience_multiplier": 1.5
+      }
+    },
+    {
+      "id": "ritual_dagger",
+      "name": "Ritual Dagger",
+      "type": "equipment",
+      "rarity": "rare",
+      "glyph": "DGR",
+      "tags": ["item.equipment", "passive.lifesteal", "attribute.intellect"],
+      "description": "Attacks from this troop heal it for 1% of maximum HP. Grants +3 INT.",
+      "duration": 0.0,
+      "weight": 0.0,
+      "drop_weight": 1.4,
+      "stack_limit": 1,
+      "effects": {
+        "attribute_bonuses": {
+          "intellect": 3
+        },
+        "heal_self_max_hp_on_attack": 0.01
+      }
+    },
+    {
+      "id": "runners_boots",
+      "name": "Runners Boots",
+      "type": "equipment",
+      "rarity": "uncommon",
+      "glyph": "SPD",
+      "tags": ["item.equipment", "passive.movement", "attribute.cunning"],
+      "description": "This troop moves 20% faster. Grants +3 CUN.",
+      "duration": 0.0,
+      "weight": 0.0,
+      "drop_weight": 3.2,
+      "stack_limit": 1,
+      "effects": {
+        "attribute_bonuses": {
+          "cunning": 3
+        },
+        "movement_speed_multiplier": 1.2
+      }
+    },
+    {
+      "id": "knights_crest",
+      "name": "Knights Crest",
+      "type": "equipment",
+      "rarity": "uncommon",
+      "glyph": "AGR",
+      "tags": ["item.equipment", "passive.threat", "attribute.strength"],
+      "description": "This troop emits additional threat to nearby enemies. Grants +3 STR.",
+      "duration": 0.0,
+      "weight": 0.0,
+      "drop_weight": 3.0,
+      "stack_limit": 1,
+      "effects": {
+        "attribute_bonuses": {
+          "strength": 3
+        },
+        "passive_threat_per_second": 25.0,
+        "passive_threat_interval": 0.5,
+        "passive_threat_radius": 180.0
+      }
+    },
+    {
+      "id": "boulder_armor",
+      "name": "Boulder Armor",
+      "type": "equipment",
+      "rarity": "rare",
+      "glyph": "ARM",
+      "tags": ["item.equipment", "passive.health", "attribute.stamina"],
+      "description": "This troop gains an additional 12 maximum HP per point of stamina. Grants +3 STM.",
+      "duration": 0.0,
+      "weight": 0.0,
+      "drop_weight": 1.2,
+      "stack_limit": 1,
+      "effects": {
+        "attribute_bonuses": {
+          "stamina": 3
+        },
+        "max_health_per_stamina_bonus": 12.0
+      }
+    }
+  ]
+}

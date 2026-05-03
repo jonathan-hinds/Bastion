@@ -1,0 +1,51 @@
+from dataclasses import dataclass
+
+
+WINDOW_SIZE = (1280, 760)
+FPS = 60
+
+TILE_SIZE = 32
+MAP_WIDTH = 180
+MAP_HEIGHT = 126
+
+TITLE_BAR_HEIGHT = 30
+TOP_BAR_HEIGHT = 86
+TOOLBAR_WIDTH = 58
+SIDE_PANEL_WIDTH = 0
+
+STARTING_GOLD = 100
+STARTING_MINERALS = 40
+TOWNHALL_MAX_HP = 150
+BASE_DAY_DURATION = 120.0
+WAVE_INTERMISSION = BASE_DAY_DURATION
+ARCANE_CORE_CAPACITY = 18
+
+MINERAL_DEPOSIT_COUNT = 22
+MINERAL_DEPOSIT_AMOUNT = 500
+GOLD_DEPOSIT_COUNT = MINERAL_DEPOSIT_COUNT
+GOLD_DEPOSIT_AMOUNT = MINERAL_DEPOSIT_AMOUNT
+MINERAL_RESPAWN_MIN = 140.0
+MINERAL_RESPAWN_MAX = 210.0
+
+PAN_SPEED = 680
+ZOOM_MIN = 0.65
+ZOOM_MAX = 1.5
+
+
+@dataclass(frozen=True)
+class Palette:
+    bg: tuple[int, int, int] = (7, 7, 7)
+    world_bg: tuple[int, int, int] = (10, 10, 10)
+    panel: tuple[int, int, int] = (15, 15, 15)
+    panel_2: tuple[int, int, int] = (24, 24, 24)
+    line: tuple[int, int, int] = (45, 45, 45)
+    line_bright: tuple[int, int, int] = (95, 95, 95)
+    text: tuple[int, int, int] = (232, 232, 232)
+    text_dim: tuple[int, int, int] = (145, 145, 145)
+    white: tuple[int, int, int] = (245, 245, 245)
+    mid: tuple[int, int, int] = (120, 120, 120)
+    dark: tuple[int, int, int] = (28, 28, 28)
+    black: tuple[int, int, int] = (0, 0, 0)
+
+
+PALETTE = Palette()

@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "enemies": [
+    {
+      "id": "small",
+      "name": "Small Raider",
+      "type": "goblin",
+      "combat_role": "melee",
+      "shape": "diamond",
+      "tags": ["melee", "raider"],
+      "stats": {
+        "health": 25,
+        "speed": 104,
+        "radius": 8,
+        "reward": 2,
+        "damage": 4,
+        "accel": 760,
+        "mass": 0.82,
+        "attack_range": 30,
+        "fire_rate": 0.9,
+        "projectile_speed": 260
+      },
+      "loot": {
+        "drop_chance": 0.12
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.0,
+        "ice": 1.0,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
+    },
+    {
+      "id": "medium",
+      "name": "Medium Revenant",
+      "type": "undead",
+      "combat_role": "melee",
+      "shape": "square",
+      "tags": ["melee", "bruiser", "undead"],
+      "stats": {
+        "health": 58,
+        "speed": 68,
+        "radius": 11,
+        "reward": 3,
+        "damage": 7,
+        "accel": 520,
+        "mass": 1.15,
+        "attack_range": 36,
+        "fire_rate": 0.9,
+        "projectile_speed": 260
+      },
+      "loot": {
+        "drop_chance": 0.18
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.0,
+        "ice": 1.0,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
+    },
+    {
+      "id": "large",
+      "name": "Large Husk",
+      "type": "undead",
+      "combat_role": "melee",
+      "shape": "octagon",
+      "tags": ["melee", "tank", "undead"],
+      "stats": {
+        "health": 165,
+        "speed": 42,
+        "radius": 16,
+        "reward": 5,
+        "damage": 14,
+        "accel": 360,
+        "mass": 1.75,
+        "attack_range": 44,
+        "fire_rate": 0.9,
+        "projectile_speed": 260
+      },
+      "loot": {
+        "drop_chance": 0.32
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.0,
+        "ice": 1.0,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
+    },
+    {
+      "id": "ranged",
+      "name": "Ranged Hexer",
+      "type": "goblin",
+      "combat_role": "ranged",
+      "shape": "cross_circle",
+      "tags": ["ranged", "tower_hunter"],
+      "stats": {
+        "health": 46,
+        "speed": 62,
+        "radius": 10,
+        "reward": 4,
+        "damage": 7,
+        "accel": 470,
+        "mass": 1.0,
+        "attack_range": 185,
+        "fire_rate": 0.58,
+        "projectile_speed": 280
+      },
+      "loot": {
+        "drop_chance": 0.22
+      },
+      "resistances": {
+        "physical": 1.0,
+        "fire": 1.0,
+        "ice": 1.0,
+        "lightning": 1.0,
+        "holy": 1.0
+      }
+    }
+  ]
+}
