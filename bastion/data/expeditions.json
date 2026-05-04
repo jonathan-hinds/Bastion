@@ -6,6 +6,7 @@
       "name": "Forgotten Depths",
       "max_party_size": 5,
       "seed_salt": 17,
+      "enemy_stat_budget_multiplier": 1.25,
       "dungeon": {
         "width": 92,
         "height": 68,
@@ -16,17 +17,17 @@
         "hallway_half_width": 1
       },
       "normal_encounters": [
-        {"room_type": "combat", "enemies": ["small", "small", "medium"]},
-        {"room_type": "combat", "enemies": ["small", "medium", "ranged"]},
-        {"room_type": "trap", "enemies": ["small", "small", "ranged"]},
-        {"room_type": "large_combat", "enemies": ["small", "small", "medium", "medium", "ranged"]}
+        {"room_type": "combat", "enemies": ["small", "small", "medium", "ranged"]},
+        {"room_type": "combat", "enemies": ["small", "medium", "ranged", "large"]},
+        {"room_type": "trap", "enemies": ["small", "medium", "ranged", "large"]},
+        {"room_type": "large_combat", "enemies": ["small", "medium", "medium", "large", "ranged", "ranged"]}
       ],
       "loot_rooms": {
-        "gold_min": 10,
-        "gold_max": 28,
-        "item_rolls": 2
+        "gold_min": 4,
+        "gold_max": 12,
+        "item_rolls": 1
       },
-      "boss_wave_counts": [5, 6, 7],
+      "boss_wave_counts": [6, 8, 10],
       "bosses": [
         {
           "id": "stormcaller",
@@ -161,12 +162,14 @@
           ]
         }
       ],
-      "guaranteed_boss_items": 5,
+      "guaranteed_boss_items": 2,
       "rewards": {
-        "enemy_xp_multiplier": 2.0,
-        "boss_gold": 75,
-        "completion_gold": 45,
-        "completion_xp": 42
+        "enemy_xp_multiplier": 1.0,
+        "enemy_gold_multiplier": 0.55,
+        "enemy_item_drop_multiplier": 0.20,
+        "boss_gold": 30,
+        "completion_gold": 15,
+        "completion_xp": 18
       }
     }
   ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 
 from bastion import config
-from bastion.game.enemy_defs import enemy_ids_by_role
+from bastion.game.enemy_defs import enemy_ids_by_role, enemy_ids_with_tag
 
 
 class WaveManager:
@@ -100,7 +100,22 @@ class WaveManager:
             kind = self._pick_kind(wave)
             spawn = self.grid.random_spawn_cell()
             events.append((t, kind, spawn))
+        events.extend(self._scheduled_boss_events(wave, duration))
         events.sort(key=lambda item: item[0])
+        return events
+
+    def _scheduled_boss_events(self, wave: int, duration: float) -> list[tuple[float, str, tuple[int, int]]]:
+        if wave < 4 or wave % 4 != 0:
+            return []
+        bosses = enemy_ids_with_tag("boss")
+        if not bosses:
+            return []
+        boss_count = 1 if wave < 12 else 2
+        events = []
+        for index in range(boss_count):
+            progress = 0.62 + index * 0.18
+            t = min(duration, max(0.0, duration * progress + random.uniform(-0.8, 0.8)))
+            events.append((t, random.choice(bosses), self.grid.random_spawn_cell()))
         return events
 
     def _pick_kind(self, wave: int) -> str:

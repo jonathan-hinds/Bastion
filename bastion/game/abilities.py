@@ -490,13 +490,24 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
     def __init__(self, owner=None) -> None:
         super().__init__(owner, "attack_cooldown")
 
+    def effective_stats(self, game=None) -> dict[str, float]:
+        if hasattr(self.owner, "stats"):
+            return self.owner.stats(game)
+        return {
+            "damage": float(getattr(self.owner, "damage", 0.0)),
+            "range": float(getattr(self.owner, "attack_range", 0.0)),
+            "fire_rate": float(getattr(self.owner, "fire_rate", 1.0)),
+        }
+
     def attack_cooldown(self, game=None) -> float:
-        return 1.0 / max(0.05, float(getattr(self.owner, "fire_rate", 1.0)))
+        stats = self.effective_stats(game)
+        return 1.0 / max(0.05, float(stats.get("fire_rate", 1.0)))
 
     def activate(self, game, target=None) -> bool:
         if target is None or not self.ready:
             return False
-        if self.owner.pos.distance_to(target.pos) > float(getattr(self.owner, "attack_range", 0.0)) + float(getattr(target, "radius", 0.0)):
+        stats = self.effective_stats(game)
+        if self.owner.pos.distance_to(target.pos) > float(stats.get("range", getattr(self.owner, "attack_range", 0.0))) + float(getattr(target, "radius", 0.0)):
             return False
         from bastion.game.entities import EnemyProjectile
 
@@ -506,7 +517,7 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
                 pos=pygame.Vector2(self.owner.pos),
                 target=target,
                 speed=float(getattr(self.owner, "projectile_speed", 260.0)),
-                damage=float(getattr(self.owner, "damage", 0.0)),
+                damage=float(stats.get("damage", getattr(self.owner, "damage", 0.0))),
                 owner=self.owner,
             )
         )
@@ -515,9 +526,10 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
         return True
 
     def detail_lines(self, game=None) -> list[str]:
+        stats = self.effective_stats(game)
         return [
-            f"Damage {_format_number(float(getattr(self.owner, 'damage', 0.0)))} physical",
-            f"Range {int(float(getattr(self.owner, 'attack_range', 0.0)))}",
+            f"Damage {_format_number(float(stats.get('damage', 0.0)))} physical",
+            f"Range {int(float(stats.get('range', 0.0)))}",
             f"Cooldown {_format_seconds(self.attack_cooldown(game))}",
         ]
 

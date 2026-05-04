@@ -10,6 +10,7 @@ from bastion import config
 from bastion.engine.camera import Camera
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.game.abilities import AbilitySystemComponent, create_boss_ability_from_definition
+from bastion.game.combat_stats import ATTRIBUTE_ORDER
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle
 from bastion.game.enemy_defs import get_enemy_def
@@ -24,7 +25,6 @@ PARTY_MOVE_SPEED = 128.0
 PARTY_FORMATION_RADIUS = 42.0
 WHISP_IDLE_INTERVAL = 0.085
 WHISP_MOVING_INTERVAL = 0.075
-ENEMY_ITEM_DROP_MULTIPLIER = 0.35
 
 EXPEDITION_METRIC_OPTIONS: tuple[str, ...] = (
     "damage_done",
@@ -372,6 +372,7 @@ class ExpeditionRun:
         )
         self.party = tuple(snapshot.troop for snapshot in self.party_snapshots)
         self.troops = list(self.party)
+        self.enemy_stat_budget = self._party_average_stat_budget()
         self.metrics_elapsed = 0.0
         self.metrics_by_troop_id = {
             id(snapshot.troop): ExpeditionTroopMetrics(snapshot.troop, snapshot.slot_index)
@@ -418,6 +419,19 @@ class ExpeditionRun:
     @property
     def alive_troops(self) -> list[Troop]:
         return [troop for troop in self.troops if troop.alive]
+
+    def _party_average_stat_budget(self) -> float:
+        if not self.party:
+            return 25.0
+        totals = []
+        for troop in self.party:
+            attributes = troop.effective_attributes() if hasattr(troop, "effective_attributes") else getattr(troop, "attributes", None)
+            if attributes is None:
+                continue
+            totals.append(sum(int(getattr(attributes, key, 0)) for key in ATTRIBUTE_ORDER))
+        if not totals:
+            return 25.0
+        return sum(totals) / len(totals)
 
     def _choose_boss(self):
         bosses = self.definition.bosses
@@ -611,7 +625,7 @@ class ExpeditionRun:
     def _spawn_next_boss_wave(self) -> None:
         count = self.definition.boss_wave_counts[self.boss_wave_index]
         self.boss_wave_index += 1
-        choices = ("small", "small", "medium", "ranged")
+        choices = ("small", "medium", "medium", "ranged", "large")
         for _ in range(count):
             self.spawn_enemy_in_room(self.rng.choice(choices), self.layout.boss_room, spawn_group="boss_wave")
         self.texts.append(FloatingText(self.layout.boss_room.center, f"WAVE {self.boss_wave_index}", 1.0))
@@ -627,6 +641,7 @@ class ExpeditionRun:
 
     def spawn_enemy_at(self, kind: str, pos: pygame.Vector2, spawn_group: str = "room") -> Enemy:
         enemy = Enemy(kind, pygame.Vector2(pos), 1, behavior="expedition", home_pos=pygame.Vector2(pos), leash_radius=9999.0, spawn_group=spawn_group)
+        enemy.apply_expedition_stat_budget(self.enemy_stat_budget * self.definition.enemy_stat_budget_multiplier)
         self.enemies.append(enemy)
         self._spatial_ready = False
         return enemy
@@ -827,8 +842,10 @@ class ExpeditionRun:
         if not enemy.alive:
             return
         enemy.alive = False
-        self.reward_gold += int(enemy.reward)
-        self.texts.append(FloatingText(pygame.Vector2(enemy.pos), f"+{int(enemy.reward)}G", 0.7))
+        gold = max(0, int(round(enemy.reward * self.definition.rewards.enemy_gold_multiplier)))
+        self.reward_gold += gold
+        if gold > 0:
+            self.texts.append(FloatingText(pygame.Vector2(enemy.pos), f"+{gold}G", 0.7))
         self.spawn_death_explosion(enemy)
         if isinstance(owner, Troop):
             xp = max(6, int(enemy.reward * 2 * self.definition.rewards.enemy_xp_multiplier))
@@ -847,7 +864,7 @@ class ExpeditionRun:
     def maybe_drop_enemy_loot(self, enemy: Enemy) -> None:
         loot = getattr(enemy, "loot", {})
         chance = float(loot.get("drop_chance", 0.18)) if isinstance(loot, dict) else 0.18
-        chance *= ENEMY_ITEM_DROP_MULTIPLIER
+        chance *= self.definition.rewards.enemy_item_drop_multiplier
         if self.rng.random() > chance:
             return
         item_id = random_drop_item_id(self.rng)

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pygame
 
 from bastion import config
+from bastion.engine.sprites import ROW_SOUTH, directional_row, enemy_sprite_sheet
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
 from bastion.game.abilities import (
@@ -23,11 +24,28 @@ from bastion.game.aggro import (
     ranged_aggro_profile,
 )
 from bastion.game.combat import MeleeAttackController
+from bastion.game.combat_stats import (
+    CombatAttributes,
+    allocate_attribute_budget,
+    attack_speed_from_agility,
+    cooldown_multiplier_from_cunning,
+    magic_damage_from_intellect,
+    max_health_from_stamina,
+    melee_damage_from_strength,
+)
 from bastion.game.elements import ElementalEffect
 from bastion.game.enemy_defs import ENEMY_DATA, get_enemy_def
 from bastion.game.navigation import PathNavigator
 from bastion.game.tower_defs import SPECIALIZATIONS, stats_for, tower_name, xp_needed
 from bastion.game.tower_mods import TOWER_MODS
+
+
+ENEMY_ATTRIBUTE_WEIGHTS: dict[str, dict[str, float]] = {
+    "small": {"stamina": 0.22, "intellect": 0.08, "strength": 0.24, "agility": 0.30, "cunning": 0.16},
+    "medium": {"stamina": 0.34, "intellect": 0.08, "strength": 0.30, "agility": 0.14, "cunning": 0.14},
+    "large": {"stamina": 0.46, "intellect": 0.04, "strength": 0.34, "agility": 0.08, "cunning": 0.08},
+    "ranged": {"stamina": 0.20, "intellect": 0.34, "strength": 0.08, "agility": 0.18, "cunning": 0.20},
+}
 
 
 @dataclass
@@ -164,6 +182,7 @@ class Enemy:
         self.display_name = data["name"]
         self.faction_type = data["faction_type"]
         self.combat_role = data["combat_role"]
+        self.attack_stat = "intellect" if self.combat_role == "ranged" else "strength"
         self.shape = data["shape"]
         self.tags = list(data.get("tags", ()))
         self.resistances = dict(data["resistances"])
@@ -177,6 +196,7 @@ class Enemy:
         self.collision_radius = min(self.radius * 0.72, config.TILE_SIZE * 0.38)
         self.reward = max(1, int(round(data["reward"] * 1.65 + wave * 0.35)))
         self.loot = dict(data.get("loot", {}))
+        self.attributes: CombatAttributes | None = None
         self.damage = int(data["damage"] + wave * 0.5)
         self.attack_range = float(data.get("attack_range", 0))
         self.fire_rate = float(data.get("fire_rate", 0.9))
@@ -214,6 +234,9 @@ class Enemy:
         self.swing_duration = {"diamond": 0.16, "square": 0.20, "octagon": 0.28}.get(self.shape, 0.18)
         self.swing_dir = pygame.Vector2(1, 0)
         self.swing_reach = self.radius + self.attack_range
+        self.sprite_anim_time = random.random() * 0.6
+        self.sprite_facing = pygame.Vector2(0, 1)
+        self.sprite_target = None
         self.melee = MeleeAttackController(self, "attack_cooldown")
         self.navigator = PathNavigator(self, "collision_radius", random.uniform(0.28, 0.46))
         self.aggro = AggroComponent(self, self._aggro_profile())
@@ -228,6 +251,46 @@ class Enemy:
     def is_ambient(self) -> bool:
         return self.behavior == "ambient"
 
+    def stats(self, game=None) -> dict[str, float]:
+        if self.attributes is None:
+            return {
+                "range": self.attack_range,
+                "damage": float(self.damage),
+                "melee_damage": float(self.damage),
+                "magic_damage": float(self.damage),
+                "fire_rate": float(self.fire_rate),
+                "ability_cooldown": 1.0,
+            }
+
+        melee_damage = melee_damage_from_strength(self.attributes.strength)
+        magic_damage = magic_damage_from_intellect(self.attributes.intellect)
+        damage = magic_damage if self.attack_stat == "intellect" else melee_damage
+        return {
+            "range": self.attack_range,
+            "damage": damage,
+            "melee_damage": melee_damage,
+            "magic_damage": magic_damage,
+            "fire_rate": attack_speed_from_agility(self.attributes.agility),
+            "ability_cooldown": cooldown_multiplier_from_cunning(self.attributes.cunning),
+        }
+
+    def apply_expedition_stat_budget(self, budget: int | float) -> None:
+        weights = ENEMY_ATTRIBUTE_WEIGHTS.get(self.kind)
+        if weights is None:
+            weights = ENEMY_ATTRIBUTE_WEIGHTS["ranged"] if self.is_ranged else ENEMY_ATTRIBUTE_WEIGHTS["medium"]
+        self.attributes = allocate_attribute_budget(budget, weights)
+        self.attack_stat = "intellect" if self.is_ranged else "strength"
+        health_fraction = max(0.0, min(1.0, self.health / max(1.0, self.max_health)))
+        self.max_health = max(self.max_health, max_health_from_stamina(self.attributes.stamina))
+        self.health = max(1.0, self.max_health * health_fraction)
+        stats = self.stats()
+        self.damage = float(stats["damage"])
+        self.fire_rate = float(stats["fire_rate"])
+        for ability in getattr(self.abilities, "abilities", ()):
+            if getattr(ability, "ability_id", "") == "melee_attack":
+                ability.fixed_cooldown = None
+                ability.use_fire_rate = True
+
     def _aggro_profile(self):
         if self.is_ambient:
             return ambient_ranged_aggro_profile() if self.is_ranged else ambient_melee_aggro_profile()
@@ -236,6 +299,7 @@ class Enemy:
     def update(self, dt: float, game) -> None:
         if not self.alive:
             return
+        self.sprite_target = None
 
         if self.burn_time > 0:
             self.burn_time -= dt
@@ -268,6 +332,7 @@ class Enemy:
         self.taunt_time = max(0.0, self.taunt_time - dt)
         self.swing_time = max(0.0, self.swing_time - dt)
         self.aggro.update(dt)
+        self._update_sprite_animation(dt)
 
         if self.stun_time > 0:
             self._decelerate(dt)
@@ -344,6 +409,7 @@ class Enemy:
         if wall_target is not None:
             self._update_melee_assault(dt, game, wall_target)
             return
+        self.sprite_target = target
         if self.melee.can_reach(target, self.attack_range):
             self._decelerate(dt)
             ability = self.abilities.primary_attack()
@@ -356,6 +422,7 @@ class Enemy:
         wall_target = game.find_enemy_wall_target(self, target) if hasattr(game, "find_enemy_wall_target") else None
         if wall_target is not None:
             target = wall_target
+        self.sprite_target = target
         if self.melee.can_reach(target, self.attack_range):
             self._decelerate(dt)
             ability = self.abilities.primary_attack()
@@ -365,6 +432,7 @@ class Enemy:
             self._move_to(target.pos, dt, game, arrival_radius=self.melee.attack_distance(target, self.attack_range))
 
     def _update_ranged_assault(self, dt: float, game, target) -> None:
+        self.sprite_target = target
         distance = self.pos.distance_to(target.pos)
         if distance <= self.attack_range + target.radius:
             self._decelerate(dt)
@@ -518,6 +586,31 @@ class Enemy:
             return self.damage_vulnerability_multiplier
         return 1.0
 
+    def _sprite_pose_vector(self) -> pygame.Vector2:
+        direction = pygame.Vector2(0, 0)
+        if self.vel.length_squared() > 64.0:
+            direction = pygame.Vector2(self.vel)
+        elif getattr(self.sprite_target, "alive", True) and hasattr(self.sprite_target, "pos"):
+            direction = pygame.Vector2(self.sprite_target.pos) - self.pos
+        elif self.swing_time > 0 and self.swing_dir.length_squared() > 0:
+            direction = pygame.Vector2(self.swing_dir)
+        elif self.vel.length_squared() > 4.0:
+            direction = pygame.Vector2(self.vel)
+
+        if direction.length_squared() > 0.01:
+            self.sprite_facing = direction.normalize()
+        return pygame.Vector2(self.sprite_facing)
+
+    def _update_sprite_animation(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        speed_ratio = 0.65
+        if self.vel.length_squared() > 1.0:
+            speed_ratio = self.vel.length() / max(1.0, self.speed)
+        elif self.sprite_target is not None or self.swing_time > 0:
+            speed_ratio = 1.0
+        self.sprite_anim_time += dt * max(0.65, min(1.55, speed_ratio))
+
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         if not self.alive:
             return
@@ -537,6 +630,14 @@ class Enemy:
         if self.damage_vulnerability_time > 0:
             draw_circle_alpha(surface, screen, r + 11 * camera.zoom, config.PALETTE.white, 58, 1)
             draw_line_alpha(surface, screen + pygame.Vector2(-r, -r), screen + pygame.Vector2(r, r), config.PALETTE.white, 72, 1)
+
+        sprite_radius = self._draw_sprite_body(surface, camera, screen)
+        if sprite_radius is not None:
+            if self.taunt_time > 0:
+                draw_circle_alpha(surface, screen, sprite_radius + 8 * camera.zoom, config.PALETTE.white, 70, 1)
+            self._draw_swing(surface, screen, sprite_radius, camera.zoom)
+            self._draw_health_bar(surface, screen, sprite_radius, camera.zoom)
+            return
 
         if self.shape == "diamond":
             points = [(screen.x, screen.y - r), (screen.x + r, screen.y), (screen.x, screen.y + r), (screen.x - r, screen.y)]
@@ -564,11 +665,38 @@ class Enemy:
             draw_circle_alpha(surface, screen, r + 8 * camera.zoom, config.PALETTE.white, 70, 1)
 
         self._draw_swing(surface, screen, r, camera.zoom)
+        self._draw_health_bar(surface, screen, r, camera.zoom)
 
-        bar_w = max(14, int(r * 2.2))
-        bar_h = max(2, int(3 * camera.zoom))
+    def _draw_sprite_body(self, surface: pygame.Surface, camera, screen: pygame.Vector2) -> int | None:
+        sheet = enemy_sprite_sheet(self.kind)
+        if sheet is None:
+            return None
+
+        direction = self._sprite_pose_vector()
+        if direction.length_squared() > 0.01:
+            row, flip_x = directional_row(direction)
+        else:
+            row, flip_x = ROW_SOUTH, False
+
+        frame = int(self.sprite_anim_time / 0.14) % 3
+        size = max(1, int(round(sheet.frame_size * camera.zoom)))
+        image = sheet.frame(row, frame, flip_x, size)
+        rect = image.get_rect(center=(int(round(screen.x)), int(round(screen.y))))
+        surface.blit(image, rect)
+
+        if self.hit_flash > 0:
+            flash = image.copy()
+            flash.fill((255, 255, 255, 0), special_flags=pygame.BLEND_RGB_ADD)
+            flash.set_alpha(int(120 * self.hit_flash))
+            surface.blit(flash, rect)
+
+        return max(3, int(size * 0.5))
+
+    def _draw_health_bar(self, surface: pygame.Surface, screen: pygame.Vector2, radius: int, zoom: float) -> None:
+        bar_w = max(14, int(radius * 2.2))
+        bar_h = max(2, int(3 * zoom))
         bar = pygame.Rect(0, 0, bar_w, bar_h)
-        bar.center = (screen.x, screen.y - r - 7)
+        bar.center = (screen.x, screen.y - radius - 7)
         pygame.draw.rect(surface, config.PALETTE.black, bar)
         fill_rect = bar.copy()
         fill_rect.width = int(bar.width * max(0.0, self.health / self.max_health))

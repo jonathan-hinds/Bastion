@@ -8,6 +8,8 @@ ROOT = Path(SPECPATH)
 datas = [
     (str(ROOT / "bastion" / "data"), "bastion/data"),
     (str(ROOT / "Sounds"), "Sounds"),
+    (str(ROOT / "Sprites" / "Sprites"), "Sprites/Sprites"),
+    (str(ROOT / "Sprites" / "Enemies" / "Sprites"), "Sprites/Enemies/Sprites"),
 ]
 
 

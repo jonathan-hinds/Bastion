@@ -80,5 +80,13 @@ def get_enemy_def(kind: str) -> dict[str, Any]:
         raise KeyError(f"Unknown enemy kind '{kind}'. Known kinds: {known}") from exc
 
 
-def enemy_ids_by_role(role: str) -> list[str]:
-    return [enemy_id for enemy_id, data in ENEMY_DATA.items() if data.get("combat_role") == role]
+def enemy_ids_by_role(role: str, *, include_bosses: bool = False) -> list[str]:
+    return [
+        enemy_id
+        for enemy_id, data in ENEMY_DATA.items()
+        if data.get("combat_role") == role and (include_bosses or "boss" not in data.get("tags", ()))
+    ]
+
+
+def enemy_ids_with_tag(tag: str) -> list[str]:
+    return [enemy_id for enemy_id, data in ENEMY_DATA.items() if tag in data.get("tags", ())]

@@ -54,6 +54,8 @@ class BossDefinition:
 @dataclass(frozen=True)
 class ExpeditionRewardsDefinition:
     enemy_xp_multiplier: float
+    enemy_gold_multiplier: float
+    enemy_item_drop_multiplier: float
     boss_gold: int
     completion_gold: int
     completion_xp: int
@@ -65,6 +67,7 @@ class ExpeditionDefinition:
     name: str
     max_party_size: int
     seed_salt: int
+    enemy_stat_budget_multiplier: float
     dungeon: DungeonDefinition
     normal_encounters: tuple[EncounterDefinition, ...]
     loot_rooms: LootRoomDefinition
@@ -106,6 +109,7 @@ def load_expedition_definitions(path: Path | None = None) -> dict[str, Expeditio
             name=str(record.get("name", expedition_id.replace("_", " ").title())),
             max_party_size=max(1, int(record.get("max_party_size", 5))),
             seed_salt=int(record.get("seed_salt", 0)),
+            enemy_stat_budget_multiplier=max(0.25, float(record.get("enemy_stat_budget_multiplier", 1.0))),
             dungeon=dungeon,
             normal_encounters=encounters,
             loot_rooms=_loot_room_definition(record.get("loot_rooms", {})),
@@ -114,6 +118,8 @@ def load_expedition_definitions(path: Path | None = None) -> dict[str, Expeditio
             guaranteed_boss_items=max(0, int(record.get("guaranteed_boss_items", 5))),
             rewards=ExpeditionRewardsDefinition(
                 enemy_xp_multiplier=float(rewards_data.get("enemy_xp_multiplier", 1.0)),
+                enemy_gold_multiplier=max(0.0, float(rewards_data.get("enemy_gold_multiplier", 1.0))),
+                enemy_item_drop_multiplier=max(0.0, float(rewards_data.get("enemy_item_drop_multiplier", 0.35))),
                 boss_gold=max(0, int(rewards_data.get("boss_gold", 0))),
                 completion_gold=max(0, int(rewards_data.get("completion_gold", 0))),
                 completion_xp=max(0, int(rewards_data.get("completion_xp", 0))),

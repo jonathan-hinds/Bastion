@@ -7,10 +7,26 @@ from dataclasses import dataclass
 import pygame
 
 from bastion import config
-from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
+from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
+from bastion.engine.sprites import FRAME_SIZE, ROW_IDLE, directional_row, troop_sprite_sheet
 from bastion.game.abilities import AbilitySystemComponent, ItemPassiveAbility, ItemThreatAuraPassive, configure_troop_abilities
 from bastion.game.combat import MeleeAttackController
+from bastion.game.combat_stats import (
+    ATTACK_SPEED_BASE,
+    ATTACK_SPEED_PER_AGILITY,
+    ATTRIBUTE_ORDER,
+    COOLDOWN_MULTIPLIER_FLOOR,
+    COOLDOWN_REDUCTION_PER_CUNNING,
+    HP_PER_STAMINA,
+    MAGIC_DAMAGE_PER_INTELLECT,
+    MELEE_DAMAGE_PER_STRENGTH,
+    attack_speed_from_agility,
+    cooldown_multiplier_from_cunning,
+    magic_damage_from_intellect,
+    max_health_from_stamina,
+    melee_damage_from_strength,
+)
 from bastion.game.entities import FloatingText
 from bastion.game.hero_trees import HERO_ORB_LEVEL_INTERVAL, node_for_troop, tree_for_troop, troop_has_tree
 from bastion.game.items import ActiveItemBuff, ITEM_DEFINITIONS, Inventory, InventorySlot
@@ -32,7 +48,6 @@ class TroopAttributes:
         return TroopAttributes(self.stamina, self.intellect, self.strength, self.agility, self.cunning)
 
 
-ATTRIBUTE_ORDER = ("stamina", "intellect", "strength", "agility", "cunning")
 ATTRIBUTE_LABELS = {
     "stamina": "Stamina",
     "intellect": "Intellect",
@@ -47,35 +62,6 @@ ATTRIBUTE_SHORT_LABELS = {
     "agility": "AGI",
     "cunning": "CUN",
 }
-
-HP_PER_STAMINA = 10.0
-MELEE_DAMAGE_PER_STRENGTH = 1.2
-MAGIC_DAMAGE_PER_INTELLECT = 1.25
-ATTACK_SPEED_BASE = 0.42
-ATTACK_SPEED_PER_AGILITY = 0.045
-COOLDOWN_REDUCTION_PER_CUNNING = 0.025
-COOLDOWN_MULTIPLIER_FLOOR = 0.45
-
-
-def max_health_from_stamina(stamina: int) -> float:
-    return max(1.0, stamina * HP_PER_STAMINA)
-
-
-def melee_damage_from_strength(strength: int) -> float:
-    return max(1.0, strength * MELEE_DAMAGE_PER_STRENGTH)
-
-
-def magic_damage_from_intellect(intellect: int) -> float:
-    return max(1.0, intellect * MAGIC_DAMAGE_PER_INTELLECT)
-
-
-def attack_speed_from_agility(agility: int) -> float:
-    return max(0.10, ATTACK_SPEED_BASE + agility * ATTACK_SPEED_PER_AGILITY)
-
-
-def cooldown_multiplier_from_cunning(cunning: int) -> float:
-    return max(COOLDOWN_MULTIPLIER_FLOOR, 1.0 - cunning * COOLDOWN_REDUCTION_PER_CUNNING)
-
 
 @dataclass(frozen=True)
 class TroopBlueprint:
@@ -1085,6 +1071,7 @@ class Troop:
         self.swing_reach = self.radius + self.base_range
         self.support_pulse = 0.0
         self.support_target = None
+        self.sprite_anim_time = random.random() * 0.6
         self.target_class = "worker" if kind == "grunt" else ("support" if kind in ("cleric", "engineer") else "troop")
         self.melee = MeleeAttackController(self)
         self.harvester = ResourceHarvester(self) if kind == "grunt" else None
@@ -1573,6 +1560,7 @@ class Troop:
         self.pos, collided = game.grid.resolve_circle_blockers(self.pos, self.radius)
         if collided:
             self.vel *= 0.35
+        self._update_sprite_animation(dt)
 
     def _choose_target(self, game):
         if not self.abilities.has_target_priority() and self.target and self.target.alive and self._enemy_inside_station(self.target):
@@ -1634,6 +1622,36 @@ class Troop:
         else:
             self.vel.scale_to_length(self.vel.length() - drop)
 
+    def _sprite_pose_vector(self) -> tuple[pygame.Vector2, bool]:
+        if self.vel.length_squared() > 64.0:
+            return pygame.Vector2(self.vel), True
+
+        if self.attack_enabled and getattr(self.target, "alive", False):
+            direction = pygame.Vector2(self.target.pos) - self.pos
+            if direction.length_squared() > 0.01:
+                return direction, True
+
+        if self.support_pulse > 0 and getattr(self.support_target, "alive", False):
+            direction = pygame.Vector2(self.support_target.pos) - self.pos
+            if direction.length_squared() > 0.01:
+                return direction, True
+
+        if self.vel.length_squared() > 16.0:
+            return pygame.Vector2(self.vel), True
+        return pygame.Vector2(0, 0), False
+
+    def _update_sprite_animation(self, dt: float) -> None:
+        if dt <= 0:
+            return
+        _direction, active = self._sprite_pose_vector()
+        if active:
+            speed_ratio = 1.0
+            if self.vel.length_squared() > 1.0:
+                speed_ratio = self.vel.length() / max(1.0, self.speed)
+            self.sprite_anim_time += dt * max(0.65, min(1.55, speed_ratio))
+        else:
+            self.sprite_anim_time += dt * 0.45
+
     def take_damage(self, amount: float, game=None) -> bool:
         if not self.alive:
             return False
@@ -1694,6 +1712,16 @@ class Troop:
                 170,
                 max(1, int(camera.zoom)),
             )
+
+        sprite_radius = self._draw_sprite_body(surface, camera, screen, hovered)
+        if sprite_radius is not None:
+            self._draw_swing(surface, camera, viewport, screen, r)
+            if self.harvester is not None:
+                if selected:
+                    self.harvester.draw(surface, camera, viewport)
+                self._draw_cargo(surface, screen, sprite_radius, camera.zoom)
+            self._draw_health(surface, screen, sprite_radius)
+            return
 
         if self.kind == "grunt":
             pygame.draw.circle(surface, fill, screen, r)
@@ -1765,6 +1793,42 @@ class Troop:
                 self.harvester.draw(surface, camera, viewport)
             self._draw_cargo(surface, screen, r, camera.zoom)
         self._draw_health(surface, screen, r)
+
+    def _draw_sprite_body(
+        self,
+        surface: pygame.Surface,
+        camera,
+        screen: pygame.Vector2,
+        hovered: bool,
+    ) -> int | None:
+        sheet = troop_sprite_sheet(self.kind)
+        if sheet is None:
+            return None
+
+        direction, active = self._sprite_pose_vector()
+        if active:
+            row, flip_x = directional_row(direction)
+            frame_seconds = 0.14
+        else:
+            row, flip_x = ROW_IDLE, False
+            frame_seconds = 0.30
+
+        frame = int(self.sprite_anim_time / frame_seconds) % 3
+        size = max(1, int(round(FRAME_SIZE * camera.zoom)))
+        image = sheet.frame(row, frame, flip_x, size, hovered)
+        rect = image.get_rect(center=(int(round(screen.x)), int(round(screen.y))))
+
+        if hovered:
+            draw_circle_alpha(surface, screen, size * 0.54, config.PALETTE.white, 34, max(1, int(camera.zoom)))
+
+        surface.blit(image, rect)
+        if self.hit_flash > 0:
+            flash = image.copy()
+            flash.fill((255, 255, 255, 0), special_flags=pygame.BLEND_RGB_ADD)
+            flash.set_alpha(int(120 * self.hit_flash))
+            surface.blit(flash, rect)
+
+        return max(3, int(size * 0.5))
 
     def _draw_cargo(self, surface: pygame.Surface, screen: pygame.Vector2, radius: int, zoom: float) -> None:
         if self.harvester is None or self.harvester.cargo <= 0:

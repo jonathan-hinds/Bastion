@@ -4,7 +4,9 @@ import pygame
 
 from bastion.game.expedition_defs import EXPEDITION_DEFINITIONS, default_expedition_definition
 from bastion.game.expeditions import ExpeditionResult
+from bastion.game.combat_stats import ATTRIBUTE_ORDER
 from bastion.game.entities import Enemy
+from bastion.game.enemy_defs import enemy_ids_by_role
 from bastion.game.state import GameState
 from bastion.game.units import ExpeditionCampsite
 from bastion.ui.hud import HUD
@@ -27,6 +29,9 @@ class ExpeditionDefinitionTests(unittest.TestCase):
         self.assertEqual({boss.boss_id for boss in definition.bosses}, {"stormcaller", "emberlord", "frostwarden"})
         for boss in definition.bosses:
             self.assertGreaterEqual(len(boss.abilities), 3)
+
+    def test_normal_role_pools_do_not_include_bosses(self):
+        self.assertFalse(any(enemy_id.startswith("boss_") for enemy_id in enemy_ids_by_role("ranged")))
 
 
 class ExpeditionStateTests(unittest.TestCase):
@@ -72,6 +77,23 @@ class ExpeditionStateTests(unittest.TestCase):
             run.update(1 / 60, PressedKeys(pygame.K_d), viewport.center, viewport)
 
         self.assertGreater(run.party_center.x, before_center.x + 10)
+
+    def test_expedition_enemy_stats_scale_from_party_budget(self):
+        state = self.make_state_with_camp()
+        state.selected_troops = state.troops[:3]
+        self.assertTrue(state.assign_control_group(0))
+        self.assertTrue(state.register_expedition_control_group(0))
+        self.assertTrue(state.start_expedition_from_setup())
+        run = state.expedition_run
+        self.assertIsNotNone(run)
+
+        enemy = run.spawn_enemy_at("ranged", run.party_center + pygame.Vector2(80, 0))
+        self.assertIsNotNone(enemy.attributes)
+        expected_budget = int(round(run.enemy_stat_budget * run.definition.enemy_stat_budget_multiplier))
+        actual_budget = sum(int(getattr(enemy.attributes, key)) for key in ATTRIBUTE_ORDER)
+        self.assertEqual(actual_budget, expected_budget)
+        self.assertEqual(enemy.attack_stat, "intellect")
+        self.assertAlmostEqual(enemy.damage, enemy.stats()["magic_damage"])
 
     def test_expedition_idle_party_magnetizes_into_attack_position(self):
         state = self.make_state_with_camp()
