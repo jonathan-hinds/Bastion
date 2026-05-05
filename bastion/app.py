@@ -141,13 +141,16 @@ class BastionApp:
                 if viewport.collidepoint(mouse):
                     self.camera.zoom_at(1.1 if event.y > 0 else 0.9, mouse, viewport)
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if self.state.expedition_run is not None and self.state.expedition_run.handle_event(event, viewport):
-                    continue
                 if event.button == 1 and event.pos[1] < config.TITLE_BAR_HEIGHT:
                     self.handle_title_bar_click(event.pos)
                     continue
                 if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
                     continue
+                if self.state.expedition_run is not None:
+                    if self.state.expedition_run.handle_event(event, viewport):
+                        continue
+                    if viewport.collidepoint(event.pos):
+                        continue
                 if viewport.collidepoint(event.pos):
                     if event.button == 2:
                         self.dragging = True
@@ -167,6 +170,8 @@ class BastionApp:
                 if event.button == 1:
                     self.title_dragging = False
                 if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
+                    continue
+                if self.state.expedition_run is not None and viewport.collidepoint(event.pos):
                     continue
                 if event.button == 2:
                     self.dragging = False

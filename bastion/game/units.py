@@ -1680,6 +1680,12 @@ class Troop:
             for ability in self.abilities.abilities:
                 ability.draw_preview(surface, camera, viewport)
 
+        holy_aura_radius = self._holy_aura_radius()
+        if holy_aura_radius is not None:
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.006 + self.sprite_anim_time)
+            draw_circle_alpha(surface, screen, holy_aura_radius * camera.zoom, config.PALETTE.white, int(9 + pulse * 10), 1)
+            draw_circle_alpha(surface, screen, r + (9 + pulse * 4) * camera.zoom, config.PALETTE.white, int(24 + pulse * 28), 1)
+
         if self.can_level_up():
             pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.010)
             draw_circle_alpha(surface, screen, (r + 7 + pulse * 4) * camera.zoom, config.PALETTE.white, 44 + int(46 * pulse), 1)
@@ -1793,6 +1799,12 @@ class Troop:
                 self.harvester.draw(surface, camera, viewport)
             self._draw_cargo(surface, screen, r, camera.zoom)
         self._draw_health(surface, screen, r)
+
+    def _holy_aura_radius(self) -> float | None:
+        for ability in getattr(self.abilities, "abilities", ()):
+            if getattr(ability, "ability_id", "") == "catalog_holy_aura" and getattr(self, "alive", False):
+                return float(getattr(ability, "radius", 0.0))
+        return None
 
     def _draw_sprite_body(
         self,

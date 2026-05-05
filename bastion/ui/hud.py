@@ -102,7 +102,7 @@ class HUD:
         buttons: list[Button] = []
         choosing_event = state.round_events.awaiting_choice
         self._sync_contextual_panels(state)
-        if getattr(state, "expedition_run", None) is not None and self.active_panel not in (None, "expedition_metrics"):
+        if getattr(state, "expedition_run", None) is not None and self.active_panel not in (None, "expedition_metrics", "inspector"):
             self.active_panel = None
 
         status_y = config.TITLE_BAR_HEIGHT + 13
@@ -163,6 +163,8 @@ class HUD:
                 buttons.extend(self._layout_expedition_buttons(panel_rect, state))
             elif self.active_panel == "expedition_metrics":
                 buttons.extend(self._layout_expedition_metric_buttons(panel_rect, state))
+            elif self.active_panel == "inspector" and getattr(state, "expedition_run", None) is not None:
+                buttons.extend(self._layout_context_buttons_for_rect(panel_rect, state))
 
         if choosing_event:
             for event, rect in self._event_card_rects(viewport, state):
@@ -218,7 +220,7 @@ class HUD:
 
     def _toolbar_entries(self, state) -> list[tuple[str, str, str]]:
         if getattr(state, "expedition_run", None) is not None:
-            return [EXPEDITION_METRICS_TOOLBAR_ENTRY]
+            return [INSPECTOR_TOOLBAR_ENTRY, EXPEDITION_METRICS_TOOLBAR_ENTRY]
         entries = [BASE_TOOLBAR_ENTRY, LEVEL_TOOLBAR_ENTRY, INSPECTOR_TOOLBAR_ENTRY]
         if self._living_barracks(state):
             entries.append(("units", "U", "Units"))
@@ -398,7 +400,7 @@ class HUD:
                 self.item_context_menu = None
                 return True
 
-            group_index = self._control_group_slot_at(pos, viewport, state)
+            group_index = None if getattr(state, "expedition_run", None) is not None else self._control_group_slot_at(pos, viewport, state)
             if group_index is not None and not state.round_events.awaiting_choice:
                 if pygame.key.get_mods() & pygame.KMOD_CTRL:
                     if state.clear_control_group(group_index):
@@ -465,7 +467,7 @@ class HUD:
             option = self._item_context_option_at(pos, state)
             if option is not None:
                 return ("item_context", option[0])
-        group_index = self._control_group_slot_at(pos, viewport, state)
+        group_index = None if getattr(state, "expedition_run", None) is not None else self._control_group_slot_at(pos, viewport, state)
         if group_index is not None:
             return ("control_group", group_index)
         source = self._item_source_at(pos, viewport, state)
@@ -713,6 +715,10 @@ class HUD:
             state.begin_station_selected()
         elif button.command == "toggle_attack":
             state.toggle_selected_troop_engagement()
+        elif button.command == "inspect_expedition_troop":
+            troop = button.value
+            if getattr(troop, "alive", False):
+                state.select_troop(troop)
         elif button.command == "specialize":
             state.specialize_selected(str(button.value))
         elif button.command == "use_item":
@@ -744,17 +750,20 @@ class HUD:
         self.tooltip_request = None
         self.layout_buttons(screen_rect, viewport, state)
         self._draw_workspace_shell(surface, screen_rect, viewport, state)
+        expedition_active = getattr(state, "expedition_run", None) is not None
 
         if self.active_panel and not state.round_events.awaiting_choice and (not self._using_external_windows() or self.active_panel == "expedition_metrics"):
             self._draw_active_panel(surface, screen_rect, viewport, state)
 
-        if not state.round_events.awaiting_choice and getattr(state, "expedition_run", None) is None:
-            if not self._using_external_windows():
-                self._draw_context_inspector(surface, screen_rect, viewport, state)
-            self._draw_control_groups(surface, viewport, state)
+        if not state.round_events.awaiting_choice:
+            if not expedition_active:
+                if not self._using_external_windows():
+                    self._draw_context_inspector(surface, screen_rect, viewport, state)
+                self._draw_control_groups(surface, viewport, state)
             self._draw_inventory(surface, viewport, state)
             self._draw_troop_inventory(surface, viewport, state)
-            self._draw_loot_banner(surface, viewport, state)
+            if not expedition_active:
+                self._draw_loot_banner(surface, viewport, state)
 
         if state.round_events.awaiting_choice:
             self._draw_round_event_modal(surface, viewport, state)
@@ -772,12 +781,15 @@ class HUD:
             image.set_alpha(int(255 * min(1.0, state.notice_timer)))
             surface.blit(image, image.get_rect(center=(viewport.centerx, config.TOP_BAR_HEIGHT + 40)))
 
-        if not state.round_events.awaiting_choice and getattr(state, "expedition_run", None) is None:
-            self._draw_control_group_tooltip(surface, viewport, state, pygame.mouse.get_pos())
+        if not state.round_events.awaiting_choice:
+            if not expedition_active:
+                self._draw_control_group_tooltip(surface, viewport, state, pygame.mouse.get_pos())
             self._draw_item_tooltip(surface, viewport, state, pygame.mouse.get_pos())
             self._draw_pending_tooltip(surface, surface.get_rect())
             self._draw_item_context_menu(surface, state, surface.get_rect())
             self._draw_item_drag(surface, state)
+        elif not state.round_events.awaiting_choice and self.active_panel == "inspector":
+            self._draw_pending_tooltip(surface, surface.get_rect())
 
         if state.game_over:
             self._draw_game_over(surface, viewport)
@@ -1134,6 +1146,8 @@ class HUD:
             self._draw_expedition_panel(surface, rect, state)
         elif self.active_panel == "expedition_metrics":
             self._draw_expedition_metrics_panel(surface, rect, state)
+        elif self.active_panel == "inspector" and getattr(state, "expedition_run", None) is not None:
+            self._draw_context_inspector_panel(surface, rect, state)
 
     def _active_panel_rect(self, screen_rect: pygame.Rect, viewport: pygame.Rect) -> pygame.Rect:
         if self.active_panel is None:
@@ -1141,6 +1155,13 @@ class HUD:
         return self._panel_rect_for(self.active_panel, screen_rect, viewport)
 
     def _panel_rect_for(self, panel: str, screen_rect: pygame.Rect, viewport: pygame.Rect) -> pygame.Rect:
+        if panel == "inspector":
+            rect = self._context_rect(screen_rect, viewport)
+            if panel in self.dialog_positions:
+                rect.topleft = self.dialog_positions[panel]
+            rect = self._clamp_panel_rect(rect, screen_rect, viewport)
+            self.dialog_positions[panel] = rect.topleft
+            return rect
         if panel == "research":
             width = min(780, max(520, viewport.width - 390))
             height = min(620, viewport.height - 34)
@@ -2661,10 +2682,60 @@ class HUD:
         rect = self._context_rect(screen_rect, viewport)
         return self._layout_context_buttons_for_rect(rect, state)
 
+    def _expedition_party_troops(self, state) -> list:
+        run = getattr(state, "expedition_run", None)
+        if run is None:
+            return []
+        return list(getattr(run, "party", ()))
+
+    def _expedition_party_card_rects(self, rect: pygame.Rect, state) -> list[tuple[object, pygame.Rect]]:
+        party = self._expedition_party_troops(state)
+        if not party:
+            return []
+        x = rect.left + 16
+        width = rect.width - 32
+        count = len(party)
+        gap = 6
+        card_w = max(44, (width - gap * (count - 1)) // count)
+        card_h = 52
+        top = rect.top + 82
+        return [
+            (troop, pygame.Rect(x + index * (card_w + gap), top, card_w, card_h))
+            for index, troop in enumerate(party)
+        ]
+
+    def _inspected_troops(self, state) -> list:
+        party = self._expedition_party_troops(state)
+        party_ids = {id(troop) for troop in party}
+        selected = [
+            troop
+            for troop in getattr(state, "selected_troops", [])
+            if getattr(troop, "alive", False)
+        ]
+        if party:
+            selected = [troop for troop in selected if id(troop) in party_ids]
+        if selected:
+            return selected
+        return []
+
     def _layout_context_buttons_for_rect(self, rect: pygame.Rect, state) -> list[Button]:
         x = rect.left + 16
         width = rect.width - 32
         buttons: list[Button] = []
+        inspected_troops = self._inspected_troops(state)
+        expedition_active = getattr(state, "expedition_run", None) is not None
+        for troop, card in self._expedition_party_card_rects(rect, state):
+            buttons.append(
+                Button(
+                    card,
+                    "",
+                    "inspect_expedition_troop",
+                    troop,
+                    enabled=getattr(troop, "alive", False),
+                    selected=troop in inspected_troops,
+                    visible=False,
+                )
+            )
         if state.selected_tower is not None:
             tower = state.selected_tower
             y = rect.top + 462
@@ -2716,9 +2787,10 @@ class HUD:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
         elif getattr(state, "selected_shield", None) is not None:
             buttons.append(Button(pygame.Rect(x, rect.bottom - 38, width, 26), "SELL", "sell"))
-        elif state.selected_troops:
-            single = state.selected_troop if len(state.selected_troops) == 1 else None
-            action_height = 68
+        elif inspected_troops:
+            direct_selection = any(getattr(troop, "alive", False) for troop in getattr(state, "selected_troops", []))
+            single = inspected_troops[0] if direct_selection and len(inspected_troops) == 1 else None
+            action_height = 30 if expedition_active else (68 if direct_selection else 30)
             if single is not None and single.attribute_points > 0:
                 action_height += 32
             if single is not None and single.can_level_up():
@@ -2740,12 +2812,51 @@ class HUD:
                 if getattr(single, "has_hero_tree", lambda: False)():
                     buttons.append(Button(pygame.Rect(x, y, width, 28), f"HERO TREE  {single.hero_orbs} ORB", "open_context_panel", "hero"))
                     y += 36
-            buttons.append(Button(pygame.Rect(x, y, width, 30), "STATION", "station", selected=state.station_mode))
-            hold_label = "HOLD FIRE" if any(troop.attack_enabled for troop in state.selected_troops) else "ENGAGE"
-            buttons.append(Button(pygame.Rect(x, y + 38, width, 30), hold_label, "toggle_attack"))
+            if direct_selection and not expedition_active:
+                buttons.append(Button(pygame.Rect(x, y, width, 30), "STATION", "station", selected=state.station_mode))
+                y += 38
+            hold_label = "HOLD FIRE" if any(troop.attack_enabled for troop in inspected_troops) else "ENGAGE"
+            buttons.append(Button(pygame.Rect(x, y, width, 30), hold_label, "toggle_attack"))
         elif state.selected_wall is not None:
             buttons.append(Button(pygame.Rect(x, rect.top + 114, width, 28), "SELL WALL", "sell"))
         return buttons
+
+    def _draw_expedition_party_selector(self, surface: pygame.Surface, rect: pygame.Rect, state) -> int:
+        cards = self._expedition_party_card_rects(rect, state)
+        if not cards:
+            return rect.top + 54
+        palette = config.PALETTE
+        selected_ids = {id(troop) for troop in self._inspected_troops(state)}
+        x = rect.left + 16
+        self._section(surface, "EXPEDITION PARTY", x, rect.top + 54)
+        mouse = self._mouse_pos()
+        for troop, card in cards:
+            alive = getattr(troop, "alive", False)
+            selected = id(troop) in selected_ids
+            hovered = alive and card.collidepoint(mouse)
+            draw_card = hover_feedback.scaled_rect(card, hovered)
+            inverted = selected or hovered
+            fill = palette.white if inverted else (palette.black if alive else palette.bg)
+            text_color = palette.black if inverted else (palette.text if alive else palette.text_dim)
+            dim_color = palette.black if inverted else palette.text_dim
+            pygame.draw.rect(surface, fill, draw_card)
+            pygame.draw.rect(surface, palette.white if alive else palette.line, draw_card, 1)
+            icon = pygame.Rect(draw_card.left + 5, draw_card.top + 5, 20, 20)
+            self._draw_unit_glyph(surface, getattr(troop, "kind", ""), icon, inverted=inverted)
+            name = str(getattr(troop, "display_name", "Troop")).upper()
+            while self.fonts["tiny"].size(name)[0] > draw_card.width - 34 and len(name) > 4:
+                name = name[:-2] + "."
+            surface.blit(self.fonts["tiny"].render(name, True, text_color), (draw_card.left + 30, draw_card.top + 7))
+            hp = max(0.0, float(getattr(troop, "health", 0.0)))
+            hp_max = max(1.0, float(getattr(troop, "max_health", 1.0)))
+            hp_rect = pygame.Rect(draw_card.left + 6, draw_card.bottom - 13, draw_card.width - 12, 4)
+            pygame.draw.rect(surface, palette.black if inverted else palette.panel_2, hp_rect)
+            fill_rect = hp_rect.copy()
+            fill_rect.width = int(hp_rect.width * min(1.0, hp / hp_max))
+            pygame.draw.rect(surface, palette.black if inverted else palette.white, fill_rect)
+            stance = "E" if getattr(troop, "attack_enabled", False) else "H"
+            surface.blit(self.fonts["tiny"].render(stance, True, dim_color), (draw_card.right - 14, draw_card.top + 25))
+        return cards[-1][1].bottom + 16
 
     def _draw_context_inspector(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state) -> None:
         rect = self._context_rect(screen_rect, viewport)
@@ -2761,6 +2872,14 @@ class HUD:
 
         x = rect.left + 16
         y = rect.top + 54
+        expedition_party = [
+            troop
+            for troop in self._expedition_party_troops(state)
+            if getattr(troop, "alive", False)
+        ]
+        if getattr(state, "expedition_run", None) is not None:
+            y = self._draw_expedition_party_selector(surface, rect, state)
+        inspected_troops = self._inspected_troops(state)
         if state.selected_tower:
             self._draw_tower_context(surface, x, y, rect, state.selected_tower, state)
         elif state.selected_barracks:
@@ -2783,10 +2902,12 @@ class HUD:
             self._draw_research_context(surface, x, y, rect, state.selected_research, state)
         elif getattr(state, "selected_shield", None):
             self._draw_shield_context(surface, x, y, rect, state.selected_shield, state)
-        elif len(state.selected_troops) > 1:
-            self._draw_troop_group_context(surface, x, y, rect, state.selected_troops, state)
-        elif state.selected_troop:
-            self._draw_troop_context(surface, x, y, rect, state.selected_troop, state)
+        elif len(inspected_troops) > 1:
+            self._draw_troop_group_context(surface, x, y, rect, inspected_troops, state)
+        elif inspected_troops:
+            self._draw_troop_context(surface, x, y, rect, inspected_troops[0], state)
+        elif expedition_party:
+            self._draw_troop_group_context(surface, x, y, rect, expedition_party, state)
         elif state.selected_wall:
             self._draw_wall_context(surface, x, y, rect, state)
         else:

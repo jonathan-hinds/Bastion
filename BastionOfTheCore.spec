@@ -10,6 +10,7 @@ datas = [
     (str(ROOT / "Sounds"), "Sounds"),
     (str(ROOT / "Sprites" / "Sprites"), "Sprites/Sprites"),
     (str(ROOT / "Sprites" / "Enemies" / "Sprites"), "Sprites/Enemies/Sprites"),
+    (str(ROOT / "Sprites" / "Enemies" / "Bosses"), "Sprites/Enemies/Bosses"),
 ]
 
 

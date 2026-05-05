@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import pygame
 
 from bastion import config
-from bastion.engine.sprites import ROW_SOUTH, directional_row, enemy_sprite_sheet
+from bastion.engine.sprites import ROW_SOUTH, attack_directional_row, directional_row, enemy_attack_sprite_sheet, enemy_sprite_sheet
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
 from bastion.game.abilities import (
@@ -46,6 +46,11 @@ ENEMY_ATTRIBUTE_WEIGHTS: dict[str, dict[str, float]] = {
     "large": {"stamina": 0.46, "intellect": 0.04, "strength": 0.34, "agility": 0.08, "cunning": 0.08},
     "ranged": {"stamina": 0.20, "intellect": 0.34, "strength": 0.08, "agility": 0.18, "cunning": 0.20},
 }
+
+FIRE_OUTER = (255, 86, 30)
+FIRE_CORE = (255, 220, 122)
+ICE_OUTER = (92, 214, 255)
+ICE_CORE = (232, 255, 255)
 
 
 @dataclass
@@ -237,6 +242,10 @@ class Enemy:
         self.sprite_anim_time = random.random() * 0.6
         self.sprite_facing = pygame.Vector2(0, 1)
         self.sprite_target = None
+        self.attack_anim_phase = ""
+        self.attack_anim_time = 0.0
+        self.attack_anim_duration = 0.0
+        self.attack_anim_direction = pygame.Vector2(0, 1)
         self.melee = MeleeAttackController(self, "attack_cooldown")
         self.navigator = PathNavigator(self, "collision_radius", random.uniform(0.28, 0.46))
         self.aggro = AggroComponent(self, self._aggro_profile())
@@ -332,6 +341,7 @@ class Enemy:
         self.taunt_time = max(0.0, self.taunt_time - dt)
         self.swing_time = max(0.0, self.swing_time - dt)
         self.aggro.update(dt)
+        self._update_attack_animation(dt)
         self._update_sprite_animation(dt)
 
         if self.stun_time > 0:
@@ -587,6 +597,10 @@ class Enemy:
         return 1.0
 
     def _sprite_pose_vector(self) -> pygame.Vector2:
+        if self.attack_anim_phase and self.attack_anim_direction.length_squared() > 0.01:
+            self.sprite_facing = self.attack_anim_direction.normalize()
+            return pygame.Vector2(self.sprite_facing)
+
         direction = pygame.Vector2(0, 0)
         if self.vel.length_squared() > 64.0:
             direction = pygame.Vector2(self.vel)
@@ -600,6 +614,55 @@ class Enemy:
         if direction.length_squared() > 0.01:
             self.sprite_facing = direction.normalize()
         return pygame.Vector2(self.sprite_facing)
+
+    def start_attack_animation(
+        self,
+        *,
+        target=None,
+        target_pos: pygame.Vector2 | None = None,
+        direction: pygame.Vector2 | None = None,
+        phase: str = "full",
+        duration: float = 0.36,
+    ) -> bool:
+        if enemy_attack_sprite_sheet(self.kind) is None:
+            return False
+
+        facing = self._attack_animation_direction(target=target, target_pos=target_pos, direction=direction)
+        if facing.length_squared() > 0.01:
+            facing = facing.normalize()
+            self.attack_anim_direction = facing
+            self.sprite_facing = pygame.Vector2(facing)
+
+        self.attack_anim_phase = phase if phase in {"windup", "impact", "full"} else "full"
+        self.attack_anim_time = 0.0
+        self.attack_anim_duration = max(0.05, float(duration))
+        return True
+
+    def _attack_animation_direction(self, *, target=None, target_pos: pygame.Vector2 | None = None, direction: pygame.Vector2 | None = None) -> pygame.Vector2:
+        if direction is not None:
+            vector = pygame.Vector2(direction)
+        elif target is not None and hasattr(target, "pos"):
+            vector = pygame.Vector2(target.pos) - self.pos
+        elif target_pos is not None:
+            vector = pygame.Vector2(target_pos) - self.pos
+        elif self.sprite_target is not None and hasattr(self.sprite_target, "pos"):
+            vector = pygame.Vector2(self.sprite_target.pos) - self.pos
+        else:
+            vector = pygame.Vector2(self.sprite_facing)
+        if vector.length_squared() <= 0.01:
+            vector = pygame.Vector2(self.sprite_facing)
+        if vector.length_squared() <= 0.01:
+            vector = pygame.Vector2(0, 1)
+        return vector
+
+    def _update_attack_animation(self, dt: float) -> None:
+        if not self.attack_anim_phase:
+            return
+        self.attack_anim_time += max(0.0, dt)
+        if self.attack_anim_time >= self.attack_anim_duration:
+            self.attack_anim_phase = ""
+            self.attack_anim_time = 0.0
+            self.attack_anim_duration = 0.0
 
     def _update_sprite_animation(self, dt: float) -> None:
         if dt <= 0:
@@ -629,7 +692,6 @@ class Enemy:
             draw_circle_alpha(surface, screen, r + 8 + pulse * 3, config.PALETTE.white, 64, 1)
         if self.damage_vulnerability_time > 0:
             draw_circle_alpha(surface, screen, r + 11 * camera.zoom, config.PALETTE.white, 58, 1)
-            draw_line_alpha(surface, screen + pygame.Vector2(-r, -r), screen + pygame.Vector2(r, r), config.PALETTE.white, 72, 1)
 
         sprite_radius = self._draw_sprite_body(surface, camera, screen)
         if sprite_radius is not None:
@@ -637,6 +699,8 @@ class Enemy:
                 draw_circle_alpha(surface, screen, sprite_radius + 8 * camera.zoom, config.PALETTE.white, 70, 1)
             self._draw_swing(surface, screen, sprite_radius, camera.zoom)
             self._draw_health_bar(surface, screen, sprite_radius, camera.zoom)
+            if self.damage_vulnerability_time > 0:
+                self._draw_vulnerability_marker(surface, screen, sprite_radius, camera.zoom)
             return
 
         if self.shape == "diamond":
@@ -664,10 +728,35 @@ class Enemy:
         if self.taunt_time > 0:
             draw_circle_alpha(surface, screen, r + 8 * camera.zoom, config.PALETTE.white, 70, 1)
 
+        if self.damage_vulnerability_time > 0:
+            self._draw_vulnerability_marker(surface, screen, r, camera.zoom)
+
         self._draw_swing(surface, screen, r, camera.zoom)
         self._draw_health_bar(surface, screen, r, camera.zoom)
 
+    def _draw_vulnerability_marker(self, surface: pygame.Surface, screen: pygame.Vector2, radius: float, zoom: float) -> None:
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.010 + self.phase)
+        size = max(5.0, 6.0 * zoom + pulse * 2.0 * zoom)
+        center = screen + pygame.Vector2(0, -radius - (15.0 + pulse * 3.0) * zoom)
+        points = [
+            (center.x, center.y - size),
+            (center.x + size, center.y),
+            (center.x, center.y + size),
+            (center.x - size, center.y),
+        ]
+        draw_circle_alpha(surface, center, size * 1.65, config.PALETTE.white, 30, 1)
+        pygame.draw.polygon(surface, config.PALETTE.black, points)
+        pygame.draw.polygon(surface, config.PALETTE.white, points, max(1, int(2 * zoom)))
+        inner = size * 0.42
+        pygame.draw.line(surface, config.PALETTE.white, (center.x - inner, center.y), (center.x + inner, center.y), max(1, int(zoom)))
+        pygame.draw.line(surface, config.PALETTE.white, (center.x, center.y - inner), (center.x, center.y + inner), max(1, int(zoom)))
+
     def _draw_sprite_body(self, surface: pygame.Surface, camera, screen: pygame.Vector2) -> int | None:
+        if self.attack_anim_phase:
+            attack_radius = self._draw_attack_sprite_body(surface, camera, screen)
+            if attack_radius is not None:
+                return attack_radius
+
         sheet = enemy_sprite_sheet(self.kind)
         if sheet is None:
             return None
@@ -691,6 +780,35 @@ class Enemy:
             surface.blit(flash, rect)
 
         return max(3, int(size * 0.5))
+
+    def _draw_attack_sprite_body(self, surface: pygame.Surface, camera, screen: pygame.Vector2) -> int | None:
+        sheet = enemy_attack_sprite_sheet(self.kind)
+        if sheet is None:
+            return None
+
+        row, flip_x = attack_directional_row(self._sprite_pose_vector())
+        frame = self._attack_animation_frame()
+        size = max(1, int(round(sheet.frame_size * camera.zoom)))
+        image = sheet.frame(row, frame, flip_x, size)
+        rect = image.get_rect(center=(int(round(screen.x)), int(round(screen.y))))
+        surface.blit(image, rect)
+
+        if self.hit_flash > 0:
+            flash = image.copy()
+            flash.fill((255, 255, 255, 0), special_flags=pygame.BLEND_RGB_ADD)
+            flash.set_alpha(int(120 * self.hit_flash))
+            surface.blit(flash, rect)
+
+        return max(3, int(size * 0.5))
+
+    def _attack_animation_frame(self) -> int:
+        progress = self.attack_anim_time / max(0.01, self.attack_anim_duration)
+        progress = max(0.0, min(0.999, progress))
+        if self.attack_anim_phase == "windup":
+            return 0 if progress < 0.50 else 1
+        if self.attack_anim_phase == "impact":
+            return 2
+        return min(2, int(progress * 3))
 
     def _draw_health_bar(self, surface: pygame.Surface, screen: pygame.Vector2, radius: int, zoom: float) -> None:
         bar_w = max(14, int(radius * 2.2))
@@ -1000,6 +1118,7 @@ class Projectile:
         if self.aoe <= 0:
             self.destination = self.pos + self.direction * max(travel_distance, delta.length())
         self.trail: list[pygame.Vector2] = [pygame.Vector2(pos)]
+        self.phase = random.random() * math.tau
         self.life = 4.0
         self.alive = True
 
@@ -1039,7 +1158,8 @@ class Projectile:
 
         self.pos += self.direction * step
         self.trail.append(pygame.Vector2(self.pos))
-        if len(self.trail) > 9:
+        max_trail = 14 if self.element_kind() in {"fire", "ice"} else 9
+        if len(self.trail) > max_trail:
             self.trail.pop(0)
 
     def hit_radius(self) -> float:
@@ -1123,6 +1243,15 @@ class Projectile:
     def elemental_effect(self) -> ElementalEffect | None:
         return elemental_effect_for_projectile(self.effect, self.owner)
 
+    def element_kind(self) -> str:
+        if self.effect == "burn":
+            return "fire"
+        if self.effect == "slow":
+            return "ice"
+        if self.effect == "chain":
+            return "lightning"
+        return "physical"
+
     def apply_effect(self, enemy: Enemy, game) -> None:
         if not enemy.alive:
             return
@@ -1132,6 +1261,13 @@ class Projectile:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         if not self.alive:
+            return
+        element = self.element_kind()
+        if element == "fire":
+            self._draw_fire_projectile(surface, camera, viewport)
+            return
+        if element == "ice":
+            self._draw_ice_projectile(surface, camera, viewport)
             return
         for i, point in enumerate(self.trail):
             t = (i + 1) / max(1, len(self.trail))
@@ -1158,6 +1294,74 @@ class Projectile:
         if self.effect == "chain":
             draw_circle_alpha(surface, screen, 12 * camera.zoom, config.PALETTE.white, 46, 1)
         pygame.draw.circle(surface, config.PALETTE.white, screen, max(2, int(radius * camera.zoom)))
+
+    def _draw_fire_projectile(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        now = pygame.time.get_ticks() * 0.001
+        tangent = pygame.Vector2(-self.direction.y, self.direction.x)
+        for i, point in enumerate(self.trail):
+            t = (i + 1) / max(1, len(self.trail))
+            flicker = math.sin(now * 24.0 + self.phase + i * 0.9)
+            jitter = tangent * flicker * (1.0 - t) * 5.0
+            screen = camera.world_to_screen(point + jitter, viewport)
+            radius = (2.2 + 7.0 * t + max(0.0, flicker) * 1.8) * camera.zoom
+            draw_circle_alpha(surface, screen, radius, FIRE_OUTER, int(26 + 118 * t), 1)
+            draw_circle_alpha(surface, screen, radius * 0.48, FIRE_CORE, int(22 + 126 * t))
+            if i > 0 and i % 2 == 0:
+                previous = camera.world_to_screen(self.trail[i - 1], viewport)
+                draw_line_alpha(surface, previous, screen, FIRE_OUTER, int(26 + 70 * t), max(1, int(2 * camera.zoom)))
+
+        screen = camera.world_to_screen(self.pos, viewport)
+        forward = self.direction
+        side = tangent
+        length = (12.0 + 3.0 * math.sin(now * 18.0 + self.phase)) * camera.zoom
+        width = 6.5 * camera.zoom
+        points = [
+            screen + forward * length,
+            screen - forward * length * 0.75 + side * width,
+            screen - forward * length * 1.10,
+            screen - forward * length * 0.75 - side * width,
+        ]
+        draw_circle_alpha(surface, screen - forward * 4.0 * camera.zoom, 14 * camera.zoom, FIRE_OUTER, 42, 1)
+        pygame.draw.polygon(surface, FIRE_OUTER, points)
+        pygame.draw.circle(surface, FIRE_CORE, screen, max(2, int(4.2 * camera.zoom)))
+        pygame.draw.circle(surface, config.PALETTE.white, screen + forward * 2.5, max(1, int(2.0 * camera.zoom)))
+
+    def _draw_ice_projectile(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        now = pygame.time.get_ticks() * 0.001
+        tangent = pygame.Vector2(-self.direction.y, self.direction.x)
+        for i, point in enumerate(self.trail):
+            t = (i + 1) / max(1, len(self.trail))
+            shard_offset = tangent * math.sin(self.phase + i * 1.7) * (1.0 - t) * 3.0
+            screen = camera.world_to_screen(point + shard_offset, viewport)
+            radius = (1.4 + 4.0 * t) * camera.zoom
+            draw_circle_alpha(surface, screen, radius + 2.0 * camera.zoom, ICE_OUTER, int(20 + 84 * t), 1)
+            if i % 2 == 0:
+                shard = max(2.0, radius)
+                points = [
+                    screen + self.direction * shard * 1.7,
+                    screen + tangent * shard * 0.72,
+                    screen - self.direction * shard * 1.3,
+                    screen - tangent * shard * 0.72,
+                ]
+                pygame.draw.polygon(surface, ICE_OUTER, points, max(1, int(camera.zoom)))
+
+        screen = camera.world_to_screen(self.pos, viewport)
+        spin = math.sin(now * 8.0 + self.phase) * 0.22
+        direction = self.direction.rotate_rad(spin)
+        tangent = pygame.Vector2(-direction.y, direction.x)
+        length = 11.5 * camera.zoom
+        width = 5.5 * camera.zoom
+        shard = [
+            screen + direction * length,
+            screen + tangent * width,
+            screen - direction * length * 0.72,
+            screen - tangent * width,
+        ]
+        draw_circle_alpha(surface, screen, 13 * camera.zoom, ICE_OUTER, 38, 1)
+        pygame.draw.polygon(surface, config.PALETTE.black, shard)
+        pygame.draw.polygon(surface, ICE_OUTER, shard, max(1, int(2 * camera.zoom)))
+        pygame.draw.line(surface, ICE_CORE, screen - direction * length * 0.45, screen + direction * length * 0.72, max(1, int(camera.zoom)))
+        pygame.draw.circle(surface, ICE_CORE, screen, max(1, int(2.1 * camera.zoom)))
 
 
 class EnemyProjectile:
@@ -1261,6 +1465,7 @@ class HostileAoeProjectile:
         self.status_duration = float(status_duration)
         self.ground_duration = float(ground_duration)
         self.trail: list[pygame.Vector2] = [pygame.Vector2(pos)]
+        self.phase = random.random() * math.tau
         self.life = 5.0
         self.alive = True
 
@@ -1290,7 +1495,8 @@ class HostileAoeProjectile:
             return
         self.pos = next_pos
         self.trail.append(pygame.Vector2(self.pos))
-        if len(self.trail) > 9:
+        max_trail = 14 if self.element in {"fire", "ice"} else 9
+        if len(self.trail) > max_trail:
             self.trail.pop(0)
 
     def _segment_hit_target(self, start: pygame.Vector2, end: pygame.Vector2, game):
@@ -1340,6 +1546,12 @@ class HostileAoeProjectile:
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         if not self.alive:
             return
+        if self.element == "fire":
+            self._draw_fire(surface, camera, viewport)
+            return
+        if self.element == "ice":
+            self._draw_ice(surface, camera, viewport)
+            return
         for i, point in enumerate(self.trail):
             t = (i + 1) / max(1, len(self.trail))
             screen = camera.world_to_screen(point, viewport)
@@ -1349,6 +1561,55 @@ class HostileAoeProjectile:
         if self.radius > 0:
             draw_circle_alpha(surface, screen, (radius + 6) * camera.zoom, config.PALETTE.white, 42, 1)
         pygame.draw.circle(surface, config.PALETTE.white, screen, max(2, int(radius * camera.zoom)))
+
+    def _draw_fire(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        now = pygame.time.get_ticks() * 0.001
+        tangent = pygame.Vector2(-self.direction.y, self.direction.x)
+        for i, point in enumerate(self.trail):
+            t = (i + 1) / max(1, len(self.trail))
+            curl = math.sin(now * 18.0 + self.phase + i * 0.8)
+            screen = camera.world_to_screen(point + tangent * curl * (1.0 - t) * 6.0, viewport)
+            radius = (2.6 + 7.4 * t) * camera.zoom
+            draw_circle_alpha(surface, screen, radius, FIRE_OUTER, int(30 + 110 * t), 1)
+            draw_circle_alpha(surface, screen, radius * 0.46, FIRE_CORE, int(24 + 104 * t))
+        screen = camera.world_to_screen(self.pos, viewport)
+        draw_circle_alpha(surface, screen, (13.0 + self.radius * 0.10) * camera.zoom, FIRE_OUTER, 52, 1)
+        pygame.draw.circle(surface, FIRE_OUTER, screen, max(3, int(7.5 * camera.zoom)))
+        pygame.draw.circle(surface, FIRE_CORE, screen + self.direction * 3 * camera.zoom, max(2, int(3.6 * camera.zoom)))
+        flame_tip = screen + self.direction * 12 * camera.zoom
+        tail = screen - self.direction * 12 * camera.zoom
+        side = tangent * 6 * camera.zoom
+        pygame.draw.polygon(surface, FIRE_OUTER, [flame_tip, tail + side, tail - side])
+
+    def _draw_ice(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        tangent = pygame.Vector2(-self.direction.y, self.direction.x)
+        for i, point in enumerate(self.trail):
+            t = (i + 1) / max(1, len(self.trail))
+            screen = camera.world_to_screen(point, viewport)
+            radius = (1.8 + 4.7 * t) * camera.zoom
+            draw_circle_alpha(surface, screen, radius + 2 * camera.zoom, ICE_OUTER, int(22 + 82 * t), 1)
+            if i % 2 == 1:
+                shard = max(2.0, radius)
+                points = [
+                    screen + self.direction * shard * 1.5,
+                    screen + tangent * shard * 0.7,
+                    screen - self.direction * shard * 1.1,
+                    screen - tangent * shard * 0.7,
+                ]
+                pygame.draw.polygon(surface, ICE_OUTER, points, max(1, int(camera.zoom)))
+        screen = camera.world_to_screen(self.pos, viewport)
+        length = (12.0 + self.radius * 0.05) * camera.zoom
+        width = 6.5 * camera.zoom
+        shard = [
+            screen + self.direction * length,
+            screen + tangent * width,
+            screen - self.direction * length * 0.80,
+            screen - tangent * width,
+        ]
+        draw_circle_alpha(surface, screen, (12.0 + self.radius * 0.08) * camera.zoom, ICE_OUTER, 42, 1)
+        pygame.draw.polygon(surface, config.PALETTE.black, shard)
+        pygame.draw.polygon(surface, ICE_OUTER, shard, max(1, int(2 * camera.zoom)))
+        pygame.draw.line(surface, ICE_CORE, screen - self.direction * length * 0.45, screen + self.direction * length * 0.70, max(1, int(camera.zoom)))
 
 
 def _research_multiplier(owner, research_id: str) -> float:

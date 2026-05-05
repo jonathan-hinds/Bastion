@@ -319,11 +319,17 @@ class GameState:
         if definition is None or definition.type != "consumable":
             self.message("NOT CONSUMABLE")
             return False
-        if troop.consume_inventory_item(troop_index, self):
+        if troop.consume_inventory_item(troop_index, self._troop_item_effect_context(troop)):
             self.message(f"{troop.display_name.upper()} USED {definition.name.upper()[:14]}")
             return True
         self.message("ITEM FAILED")
         return False
+
+    def _troop_item_effect_context(self, troop: Troop):
+        run = self.expedition_run
+        if run is not None and troop in getattr(run, "troops", ()):
+            return run
+        return self
 
     def equip_selected_troop_item(self, troop_index: int, equipment_index: int | None = None) -> bool:
         troop = self.selected_troop
@@ -2186,10 +2192,11 @@ class GameState:
             self.message("SET STATION")
 
     def toggle_selected_troop_engagement(self) -> None:
-        if not self.selected_troops:
+        troops = [troop for troop in self.selected_troops if troop.alive]
+        if not troops:
             return
-        should_hold = any(troop.attack_enabled for troop in self.selected_troops)
-        for troop in self.selected_troops:
+        should_hold = any(troop.attack_enabled for troop in troops)
+        for troop in troops:
             troop.attack_enabled = not should_hold
             if should_hold:
                 troop.target = None

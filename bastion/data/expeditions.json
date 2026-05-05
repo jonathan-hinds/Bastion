@@ -6,7 +6,7 @@
       "name": "Forgotten Depths",
       "max_party_size": 5,
       "seed_salt": 17,
-      "enemy_stat_budget_multiplier": 1.25,
+      "enemy_stat_budget_multiplier": 1.0,
       "dungeon": {
         "width": 92,
         "height": 68,

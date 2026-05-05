@@ -10,12 +10,18 @@ import pygame
 FRAME_SIZE = 32
 FRAMES_PER_ROW = 3
 ENEMY_SPRITE_ROWS = 5
+BOSS_FRAME_SIZE = 64
+ATTACK_FRAMES_PER_ROW = 3
+ATTACK_SPRITE_ROWS = 3
 ROW_NORTH = 0
 ROW_NORTH_EAST = 1
 ROW_EAST = 2
 ROW_SOUTH_EAST = 3
 ROW_SOUTH = 4
 ROW_IDLE = 5
+ATTACK_ROW_NORTH = 0
+ATTACK_ROW_EAST = 1
+ATTACK_ROW_SOUTH = 2
 
 TROOP_SPRITE_FILES = {
     "grunt": "grunt-sprite.png",
@@ -32,6 +38,15 @@ ENEMY_SPRITE_FILES = {
     "medium": ("Medium-Revenant.png", 32),
     "ranged": ("Ranged-Hexer.png", 32),
     "large": ("Large-Husk.png", 48),
+    "boss_lightning": ("stormcaller.png", BOSS_FRAME_SIZE, "boss"),
+    "boss_fire": ("fire.png", BOSS_FRAME_SIZE, "boss"),
+    "boss_ice": ("frost.png", BOSS_FRAME_SIZE, "boss"),
+}
+
+ENEMY_ATTACK_SPRITE_FILES = {
+    "boss_lightning": ("stormcaller-attack2.png", BOSS_FRAME_SIZE, "boss"),
+    "boss_fire": ("fire-attack.png", BOSS_FRAME_SIZE, "boss"),
+    "boss_ice": ("frost-attack2.png", BOSS_FRAME_SIZE, "boss"),
 }
 
 
@@ -43,12 +58,14 @@ def asset_root() -> Path:
 
 SPRITE_DIR = asset_root() / "Sprites" / "Sprites"
 ENEMY_SPRITE_DIR = asset_root() / "Sprites" / "Enemies" / "Sprites"
+BOSS_SPRITE_DIR = asset_root() / "Sprites" / "Enemies" / "Bosses"
 
 
 class TroopSpriteSheet:
-    def __init__(self, path: Path, frame_size: int = FRAME_SIZE, row_count: int = 6) -> None:
+    def __init__(self, path: Path, frame_size: int = FRAME_SIZE, row_count: int = 6, frames_per_row: int = FRAMES_PER_ROW) -> None:
         self.frame_size = int(frame_size)
         self.row_count = int(row_count)
+        self.frames_per_row = int(frames_per_row)
         image = pygame.image.load(str(path))
         try:
             image = image.convert_alpha()
@@ -56,7 +73,7 @@ class TroopSpriteSheet:
             image = image.copy()
 
         self.frames: tuple[tuple[pygame.Surface, ...], ...] = tuple(
-            tuple(self._copy_frame(image, row, col) for col in range(FRAMES_PER_ROW))
+            tuple(self._copy_frame(image, row, col) for col in range(self.frames_per_row))
             for row in range(self.row_count)
         )
         self.flipped_frames: tuple[tuple[pygame.Surface, ...], ...] = tuple(
@@ -81,7 +98,7 @@ class TroopSpriteSheet:
 
     def frame(self, row: int, col: int, flip_x: bool, size: int, inverted: bool = False) -> pygame.Surface:
         row = max(0, min(self.row_count - 1, int(row)))
-        col = int(col) % FRAMES_PER_ROW
+        col = int(col) % self.frames_per_row
         size = max(1, int(size))
         cache_key = (row, col, bool(flip_x), bool(inverted), size)
         cached = self._scaled_cache.get(cache_key)
@@ -114,6 +131,7 @@ def _inverted_frame(frame: pygame.Surface) -> pygame.Surface:
 
 _troop_sprite_cache: dict[str, TroopSpriteSheet | None] = {}
 _enemy_sprite_cache: dict[str, TroopSpriteSheet | None] = {}
+_enemy_attack_sprite_cache: dict[str, TroopSpriteSheet | None] = {}
 
 
 def troop_sprite_sheet(kind: str) -> TroopSpriteSheet | None:
@@ -136,8 +154,10 @@ def enemy_sprite_sheet(kind: str) -> TroopSpriteSheet | None:
         if record is None:
             _enemy_sprite_cache[kind] = None
         else:
-            filename, frame_size = record
-            path = ENEMY_SPRITE_DIR / filename
+            filename = record[0]
+            frame_size = record[1]
+            directory = BOSS_SPRITE_DIR if len(record) > 2 and record[2] == "boss" else ENEMY_SPRITE_DIR
+            path = directory / filename
             if not path.exists():
                 _enemy_sprite_cache[kind] = None
             else:
@@ -146,6 +166,26 @@ def enemy_sprite_sheet(kind: str) -> TroopSpriteSheet | None:
                 except (OSError, pygame.error, ValueError):
                     _enemy_sprite_cache[kind] = None
     return _enemy_sprite_cache[kind]
+
+
+def enemy_attack_sprite_sheet(kind: str) -> TroopSpriteSheet | None:
+    if kind not in _enemy_attack_sprite_cache:
+        record = ENEMY_ATTACK_SPRITE_FILES.get(kind)
+        if record is None:
+            _enemy_attack_sprite_cache[kind] = None
+        else:
+            filename = record[0]
+            frame_size = record[1]
+            directory = BOSS_SPRITE_DIR if len(record) > 2 and record[2] == "boss" else ENEMY_SPRITE_DIR
+            path = directory / filename
+            if not path.exists():
+                _enemy_attack_sprite_cache[kind] = None
+            else:
+                try:
+                    _enemy_attack_sprite_cache[kind] = TroopSpriteSheet(path, frame_size, ATTACK_SPRITE_ROWS, ATTACK_FRAMES_PER_ROW)
+                except (OSError, pygame.error, ValueError):
+                    _enemy_attack_sprite_cache[kind] = None
+    return _enemy_attack_sprite_cache[kind]
 
 
 def directional_row(vector: pygame.Vector2) -> tuple[int, bool]:
@@ -168,3 +208,14 @@ def directional_row(vector: pygame.Vector2) -> tuple[int, bool]:
     if -112.5 <= angle < -67.5:
         return ROW_SOUTH, False
     return ROW_SOUTH_EAST, False
+
+
+def attack_directional_row(vector: pygame.Vector2) -> tuple[int, bool]:
+    if vector.length_squared() == 0:
+        return ATTACK_ROW_SOUTH, False
+
+    if abs(vector.x) > abs(vector.y):
+        return ATTACK_ROW_EAST, vector.x < 0
+    if vector.y < 0:
+        return ATTACK_ROW_NORTH, False
+    return ATTACK_ROW_SOUTH, False

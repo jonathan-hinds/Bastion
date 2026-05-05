@@ -512,6 +512,8 @@ class EnemyRangedAttackAbility(CooldownDrivenAttack):
         from bastion.game.entities import EnemyProjectile
 
         self.set_cooldown(self.attack_cooldown(game))
+        if hasattr(self.owner, "start_attack_animation"):
+            self.owner.start_attack_animation(target=target, phase="full", duration=0.38)
         game.enemy_projectiles.append(
             EnemyProjectile(
                 pos=pygame.Vector2(self.owner.pos),
@@ -597,6 +599,7 @@ class BossTelegraphedAbility(GameplayAbility):
         self.cast_total = self.cast_time
         self.cooldown_remaining = self.effective_cooldown(game)
         self._notify_activated(game)
+        self._start_attack_windup(game, target)
         if hasattr(game, "spawn_hit"):
             game.spawn_hit(getattr(self.owner, "pos", self.cast_pos), 2)
         return True
@@ -610,6 +613,18 @@ class BossTelegraphedAbility(GameplayAbility):
         if not candidates:
             return None
         return min(candidates, key=lambda troop: troop.pos.distance_to(self.owner.pos))
+
+    def _start_attack_windup(self, game, target=None) -> None:
+        if hasattr(self.owner, "start_attack_animation"):
+            self.owner.start_attack_animation(target=target, target_pos=self.cast_pos, phase="windup", duration=self.cast_time)
+
+    def _start_attack_impact(self, game, *, target=None, target_pos: pygame.Vector2 | None = None, duration: float = 0.24) -> None:
+        if hasattr(self.owner, "start_attack_animation"):
+            self.owner.start_attack_animation(target=target, target_pos=target_pos, phase="impact", duration=duration)
+
+    def _nearest_animation_target(self, game, radius: float | None = None):
+        search_radius = radius if radius is not None else max(1.0, _owner_range(self.owner, game, 220.0)) + 80.0
+        return _nearest_troop(game, self.owner.pos, search_radius)
 
     def _apply_status(self, target, center: pygame.Vector2) -> None:
         if self.element == "fire" and self.status_duration > 0 and hasattr(target, "apply_burn"):
@@ -673,6 +688,7 @@ class BossTelegraphedStrikeAbility(BossTelegraphedAbility):
         center = pygame.Vector2(self.cast_pos) if self.cast_pos is not None else pygame.Vector2(self.owner.pos)
         self.cast_pos = None
         self.cast_remaining = 0.0
+        self._start_attack_impact(game, target_pos=center)
         hit_radius = max(8.0, self.radius)
         if hasattr(game, "show_damage_impact"):
             game.show_damage_impact(center, "aoe" if hit_radius > 18 else "single", hit_radius)
@@ -695,17 +711,20 @@ class BossPartyPulseAbility(BossTelegraphedAbility):
     def activate(self, game, target=None) -> bool:
         if not self.ready or not self.should_auto_activate(game):
             return False
+        target = target or self._nearest_animation_target(game, self.radius + 32.0)
         self.cast_pos = pygame.Vector2(self.owner.pos)
         self.cast_remaining = self.cast_time
         self.cast_total = self.cast_time
         self.cooldown_remaining = self.effective_cooldown(game)
         self._notify_activated(game)
+        self._start_attack_windup(game, target)
         return True
 
     def finish_cast(self, game) -> None:
         center = pygame.Vector2(self.owner.pos)
         self.cast_pos = None
         self.cast_remaining = 0.0
+        self._start_attack_impact(game, target=self._nearest_animation_target(game, self.radius + 32.0))
         if hasattr(game, "show_damage_impact"):
             game.show_damage_impact(center, "aoe", self.radius)
         for troop in _nearby_troops(game, center, self.radius + 32.0):
@@ -743,6 +762,7 @@ class BossProjectileAbility(BossTelegraphedAbility):
         target_pos = pygame.Vector2(self.cast_pos) if self.cast_pos is not None else pygame.Vector2(self.owner.pos)
         self.cast_pos = None
         self.cast_remaining = 0.0
+        self._start_attack_impact(game, target_pos=target_pos)
         from bastion.game.entities import HostileAoeProjectile
 
         game.enemy_projectiles.append(
@@ -776,17 +796,20 @@ class BossRadialProjectileAbility(BossProjectileAbility):
     def activate(self, game, target=None) -> bool:
         if not self.ready or not self.should_auto_activate(game):
             return False
+        target = target or self._nearest_animation_target(game, max(1.0, _owner_range(self.owner, game, 260.0)))
         self.cast_pos = pygame.Vector2(self.owner.pos)
         self.cast_remaining = self.cast_time
         self.cast_total = self.cast_time
         self.cooldown_remaining = self.effective_cooldown(game)
         self._notify_activated(game)
+        self._start_attack_windup(game, target)
         return True
 
     def finish_cast(self, game) -> None:
         center = pygame.Vector2(self.owner.pos)
         self.cast_pos = None
         self.cast_remaining = 0.0
+        self._start_attack_impact(game, target=self._nearest_animation_target(game, max(1.0, _owner_range(self.owner, game, 260.0))))
         from bastion.game.entities import HostileAoeProjectile
 
         if hasattr(game, "show_damage_impact"):

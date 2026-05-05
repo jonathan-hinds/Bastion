@@ -25,6 +25,9 @@ PARTY_MOVE_SPEED = 128.0
 PARTY_FORMATION_RADIUS = 42.0
 WHISP_IDLE_INTERVAL = 0.085
 WHISP_MOVING_INTERVAL = 0.075
+EXPEDITION_TILE_SIZE = max(8, config.TILE_SIZE // 2)
+EXPEDITION_LAYOUT_SCALE = max(1, int(round(config.TILE_SIZE / EXPEDITION_TILE_SIZE)))
+EXPEDITION_WHISP_SCALE = 0.68
 
 EXPEDITION_METRIC_OPTIONS: tuple[str, ...] = (
     "damage_done",
@@ -132,10 +135,11 @@ class ExpeditionResult:
 class DungeonRoom:
     rect: pygame.Rect
     room_type: str
+    tile_size: int = config.TILE_SIZE
 
     @property
     def center(self) -> pygame.Vector2:
-        return pygame.Vector2(self.rect.centerx * config.TILE_SIZE, self.rect.centery * config.TILE_SIZE)
+        return pygame.Vector2(self.rect.centerx * self.tile_size, self.rect.centery * self.tile_size)
 
 
 @dataclass(frozen=True)
@@ -243,6 +247,14 @@ class ExpeditionDungeonGenerator:
         self.definition = definition
         self.rng = rng
         self.dungeon = definition.dungeon
+        self.tile_size = EXPEDITION_TILE_SIZE
+        self.scale = EXPEDITION_LAYOUT_SCALE
+        self.width = self.dungeon.width * self.scale
+        self.height = self.dungeon.height * self.scale
+        self.room_min_size = self._scaled(self.dungeon.room_min_size)
+        self.room_max_size = self._scaled(self.dungeon.room_max_size)
+        self.hallway_half_width = max(1, self.dungeon.hallway_half_width * self.scale)
+        self.margin = self._scaled(3)
         self.floor: set[tuple[int, int]] = set()
         self.rooms: list[DungeonRoom] = []
 
@@ -257,13 +269,14 @@ class ExpeditionDungeonGenerator:
         for side in side_rooms:
             anchor = min(main_rooms, key=lambda room: _cell_distance(room.rect.center, side.rect.center))
             self._carve_corridor(anchor.rect.center, side.rect.center)
+        self._add_floor_detail()
 
-        grid = GameGrid(self.dungeon.width, self.dungeon.height, config.TILE_SIZE)
+        grid = GameGrid(self.width, self.height, self.tile_size)
         grid.townhall_cell = main_rooms[0].rect.center
         walls = {
             (x, y)
-            for x in range(self.dungeon.width)
-            for y in range(self.dungeon.height)
+            for x in range(self.width)
+            for y in range(self.height)
             if (x, y) not in self.floor
         }
         grid.walls = walls
@@ -275,25 +288,28 @@ class ExpeditionDungeonGenerator:
         exit_cell = (boss.rect.right - 2, boss.rect.centery)
         return DungeonLayout(grid, tuple(self.rooms), start, boss, frozenset(self.floor), exit_cell)
 
+    def _scaled(self, value: int | float) -> int:
+        return max(1, int(round(value * self.scale)))
+
     def _main_room_chain(self) -> list[DungeonRoom]:
         count = self.dungeon.main_rooms
         rooms: list[DungeonRoom] = []
-        min_size = self.dungeon.room_min_size
-        max_size = self.dungeon.room_max_size
+        min_size = self.room_min_size
+        max_size = self.room_max_size
         for index in range(count):
             progress = index / max(1, count - 1)
             width = self.rng.randint(min_size, max_size)
             height = self.rng.randint(min_size, max_size)
             if index == 0:
-                width, height = 11, 11
+                width, height = self._scaled(11), self._scaled(11)
             elif index == count - 1:
-                width, height = 17, 15
-            x = int(4 + progress * (self.dungeon.width - 24))
-            y_center = self.dungeon.height // 2 + int(math.sin(progress * math.tau * 1.35) * 13) + self.rng.randint(-5, 5)
-            x = max(3, min(self.dungeon.width - width - 3, x))
-            y = max(3, min(self.dungeon.height - height - 3, y_center - height // 2))
+                width, height = self._scaled(17), self._scaled(15)
+            x = int(self._scaled(4) + progress * (self.width - self._scaled(24)))
+            y_center = self.height // 2 + int(math.sin(progress * math.tau * 1.35) * self._scaled(13)) + self.rng.randint(-self._scaled(5), self._scaled(5))
+            x = max(self.margin, min(self.width - width - self.margin, x))
+            y = max(self.margin, min(self.height - height - self.margin, y_center - height // 2))
             room_type = "start" if index == 0 else ("boss" if index == count - 1 else self._main_room_type(index))
-            rooms.append(DungeonRoom(pygame.Rect(x, y, width, height), room_type))
+            rooms.append(DungeonRoom(pygame.Rect(x, y, width, height), room_type, self.tile_size))
         return rooms
 
     def _main_room_type(self, index: int) -> str:
@@ -305,30 +321,37 @@ class ExpeditionDungeonGenerator:
         anchors = main_rooms[1:-1] or main_rooms
         for index in range(self.dungeon.side_rooms):
             anchor = self.rng.choice(anchors)
-            width = self.rng.randint(6, max(7, self.dungeon.room_min_size + 2))
-            height = self.rng.randint(6, max(7, self.dungeon.room_min_size + 2))
+            width = self.rng.randint(self._scaled(6), max(self._scaled(7), self.room_min_size + self._scaled(2)))
+            height = self.rng.randint(self._scaled(6), max(self._scaled(7), self.room_min_size + self._scaled(2)))
             direction = self.rng.choice((pygame.Vector2(0, -1), pygame.Vector2(0, 1), pygame.Vector2(-1, 0), pygame.Vector2(1, 0)))
-            center = pygame.Vector2(anchor.rect.center) + direction * self.rng.randint(9, 15)
-            x = max(3, min(self.dungeon.width - width - 3, int(center.x - width // 2)))
-            y = max(3, min(self.dungeon.height - height - 3, int(center.y - height // 2)))
+            center = pygame.Vector2(anchor.rect.center) + direction * self.rng.randint(self._scaled(9), self._scaled(15))
+            x = max(self.margin, min(self.width - width - self.margin, int(center.x - width // 2)))
+            y = max(self.margin, min(self.height - height - self.margin, int(center.y - height // 2)))
             room_type = "loot" if index % 2 == 0 else self.rng.choice(("combat", "trap"))
-            rooms.append(DungeonRoom(pygame.Rect(x, y, width, height), room_type))
+            rooms.append(DungeonRoom(pygame.Rect(x, y, width, height), room_type, self.tile_size))
         return rooms
 
     def _carve_room(self, rect: pygame.Rect) -> None:
         for x in range(rect.left, rect.right):
             for y in range(rect.top, rect.bottom):
-                self.floor.add((x, y))
+                self._add_floor_cell((x, y))
+        self._carve_room_edge_noise(rect)
 
     def _carve_corridor(self, start: tuple[int, int], end: tuple[int, int]) -> None:
         sx, sy = start
         ex, ey = end
-        if self.rng.random() < 0.5:
-            self._carve_hall_line((sx, sy), (ex, sy))
-            self._carve_hall_line((ex, sy), (ex, ey))
+        if self.rng.random() < 0.5 and abs(ex - sx) > self._scaled(8):
+            bend_x = self.rng.randint(min(sx, ex) + self._scaled(3), max(sx, ex) - self._scaled(3))
+            points = [(sx, sy), (bend_x, sy), (bend_x, ey), (ex, ey)]
+        elif abs(ey - sy) > self._scaled(8):
+            bend_y = self.rng.randint(min(sy, ey) + self._scaled(3), max(sy, ey) - self._scaled(3))
+            points = [(sx, sy), (sx, bend_y), (ex, bend_y), (ex, ey)]
+        elif self.rng.random() < 0.5:
+            points = [(sx, sy), (ex, sy), (ex, ey)]
         else:
-            self._carve_hall_line((sx, sy), (sx, ey))
-            self._carve_hall_line((sx, ey), (ex, ey))
+            points = [(sx, sy), (sx, ey), (ex, ey)]
+        for left, right in zip(points, points[1:]):
+            self._carve_hall_line(left, right)
 
     def _carve_hall_line(self, start: tuple[int, int], end: tuple[int, int]) -> None:
         sx, sy = start
@@ -336,9 +359,11 @@ class ExpeditionDungeonGenerator:
         dx = 0 if ex == sx else (1 if ex > sx else -1)
         dy = 0 if ey == sy else (1 if ey > sy else -1)
         x, y = sx, sy
-        half = self.dungeon.hallway_half_width
+        half = self.hallway_half_width
         while (x, y) != (ex, ey):
             self._carve_hall_cell(x, y, half)
+            if self.rng.random() < 0.075:
+                self._carve_hall_alcove(x, y, dx, dy, half)
             x += dx
             y += dy
         self._carve_hall_cell(ex, ey, half)
@@ -346,9 +371,82 @@ class ExpeditionDungeonGenerator:
     def _carve_hall_cell(self, x: int, y: int, half: int) -> None:
         for ox in range(-half, half + 1):
             for oy in range(-half, half + 1):
-                cell = (x + ox, y + oy)
-                if 1 <= cell[0] < self.dungeon.width - 1 and 1 <= cell[1] < self.dungeon.height - 1:
-                    self.floor.add(cell)
+                self._add_floor_cell((x + ox, y + oy))
+
+    def _carve_room_edge_noise(self, rect: pygame.Rect) -> None:
+        min_span = max(2, self.scale)
+        max_span = max(min_span, self._scaled(4))
+        max_depth = max(1, self.scale + 1)
+        for side in ("top", "bottom"):
+            passes = max(2, rect.width // self._scaled(5))
+            for _ in range(passes):
+                if self.rng.random() > 0.42:
+                    continue
+                span = self.rng.randint(min_span, max_span)
+                depth = self.rng.randint(1, max_depth)
+                start_x = self.rng.randint(rect.left + 1, max(rect.left + 1, rect.right - span - 1))
+                y_base = rect.top - 1 if side == "top" else rect.bottom
+                y_step = -1 if side == "top" else 1
+                for ox in range(span):
+                    for d in range(depth):
+                        self._add_floor_cell((start_x + ox, y_base + y_step * d))
+        for side in ("left", "right"):
+            passes = max(2, rect.height // self._scaled(5))
+            for _ in range(passes):
+                if self.rng.random() > 0.42:
+                    continue
+                span = self.rng.randint(min_span, max_span)
+                depth = self.rng.randint(1, max_depth)
+                start_y = self.rng.randint(rect.top + 1, max(rect.top + 1, rect.bottom - span - 1))
+                x_base = rect.left - 1 if side == "left" else rect.right
+                x_step = -1 if side == "left" else 1
+                for oy in range(span):
+                    for d in range(depth):
+                        self._add_floor_cell((x_base + x_step * d, start_y + oy))
+
+    def _carve_hall_alcove(self, x: int, y: int, dx: int, dy: int, half: int) -> None:
+        if dx == 0 and dy == 0:
+            return
+        if dx != 0:
+            perp = (0, self.rng.choice((-1, 1)))
+            along = (dx, 0)
+        else:
+            perp = (self.rng.choice((-1, 1)), 0)
+            along = (0, dy)
+        depth = self.rng.randint(1, max(1, self.scale + 1))
+        width = self.rng.randint(0, 1)
+        for step in range(half + 1, half + depth + 1):
+            base = (x + perp[0] * step, y + perp[1] * step)
+            for offset in range(-width, width + 1):
+                self._add_floor_cell((base[0] + along[0] * offset, base[1] + along[1] * offset))
+
+    def _add_floor_detail(self) -> None:
+        edge_sources = list(self.floor)
+        if not edge_sources:
+            return
+        attempts = max(28, len(edge_sources) // 30)
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        for _ in range(attempts):
+            x, y = self.rng.choice(edge_sources)
+            ordered = list(directions)
+            self.rng.shuffle(ordered)
+            for dx, dy in ordered:
+                if (x + dx, y + dy) in self.floor:
+                    continue
+                depth = self.rng.randint(1, max(1, self.scale + 1))
+                width = self.rng.randint(0, 1)
+                if dx != 0:
+                    side = (0, 1)
+                else:
+                    side = (1, 0)
+                for step in range(1, depth + 1):
+                    for offset in range(-width, width + 1):
+                        self._add_floor_cell((x + dx * step + side[0] * offset, y + dy * step + side[1] * offset))
+                break
+
+    def _add_floor_cell(self, cell: tuple[int, int]) -> None:
+        if 1 <= cell[0] < self.width - 1 and 1 <= cell[1] < self.height - 1:
+            self.floor.add(cell)
 
 
 class ExpeditionRun:
@@ -372,6 +470,8 @@ class ExpeditionRun:
         )
         self.party = tuple(snapshot.troop for snapshot in self.party_snapshots)
         self.troops = list(self.party)
+        self.towers: list[object] = []
+        self.buildings: list[object] = []
         self.enemy_stat_budget = self._party_average_stat_budget()
         self.metrics_elapsed = 0.0
         self.metrics_by_troop_id = {
@@ -420,6 +520,17 @@ class ExpeditionRun:
     def alive_troops(self) -> list[Troop]:
         return [troop for troop in self.troops if troop.alive]
 
+    def find_troop_at(self, world: pygame.Vector2) -> Troop | None:
+        point = pygame.Vector2(world)
+        candidates = [
+            troop
+            for troop in self.troops
+            if troop.alive and troop.pos.distance_to(point) <= max(18.0, troop.radius * 2.2)
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda troop: troop.pos.distance_to(point))
+
     def _party_average_stat_budget(self) -> float:
         if not self.party:
             return 25.0
@@ -465,6 +576,17 @@ class ExpeditionRun:
             if self.return_button_rect.collidepoint(event.pos):
                 self.finished_result = self._build_result(False, "Party defeated")
                 return True
+        if event.type == pygame.MOUSEBUTTONDOWN and viewport.collidepoint(event.pos):
+            if event.button == 1:
+                world = self.camera.screen_to_world(event.pos, viewport)
+                troop = self.find_troop_at(world)
+                if troop is not None and hasattr(self.main_state, "select_troop"):
+                    self.main_state.select_troop(troop)
+                elif hasattr(self.main_state, "clear_selection"):
+                    self.main_state.clear_selection()
+                return True
+            if event.button in (2, 3):
+                return True
         return False
 
     def close_as_loss(self) -> None:
@@ -477,6 +599,9 @@ class ExpeditionRun:
             return
         dt = min(0.05, dt)
         self._update_fx(dt)
+        if hasattr(self.main_state, "update_item_buffs"):
+            self.main_state.update_item_buffs(dt)
+            self.active_item_buffs = getattr(self.main_state, "active_item_buffs", self.active_item_buffs)
         if self.phase == "defeat":
             return
         self.metrics_elapsed += dt
@@ -547,7 +672,6 @@ class ExpeditionRun:
                 continue
             rotated = offset.rotate_rad(self.facing_angle + math.pi / 2)
             troop.station = self.grid.nearest_clear_world(self.party_center + rotated, troop.radius, max_radius=5)
-            troop.attack_enabled = True
         self._emit_party_whisp(dt, previous_center, moving)
 
     def _trigger_rooms(self) -> None:
@@ -812,8 +936,16 @@ class ExpeditionRun:
             actual_amount *= enemy.damage_taken_multiplier(owner)
         if actual_amount <= 0:
             return
-        if owner is not None and hasattr(enemy, "aggro") and getattr(owner, "alive", True):
+        if (
+            owner is not None
+            and hasattr(enemy, "aggro")
+            and getattr(owner, "alive", True)
+            and float(getattr(owner, "stealth_time", 0.0)) <= 0
+            and not self.aggro_suppressed_by_cover_fire(owner)
+        ):
             threat = actual_amount * (0.35 if quiet else 1.25)
+            if isinstance(owner, Troop):
+                threat *= owner.aggro_generation_multiplier()
             enemy.aggro.add_threat(owner, threat, "damage")
             self.record_aggro(owner, threat)
         metrics = self.metric_for(owner)
@@ -888,6 +1020,9 @@ class ExpeditionRun:
     ) -> None:
         if not getattr(target, "alive", False) or amount <= 0:
             return
+        if isinstance(target, Troop) and self.item_flag("troop_invincible"):
+            self.spawn_hit(target.pos, 2)
+            return
         actual_amount = amount * damage_multiplier(target, element)
         blocked = 0.0
         if isinstance(target, Troop):
@@ -905,6 +1040,21 @@ class ExpeditionRun:
             self.record_blocks(target, blocked)
             self.spawn_hit(target.pos, 2)
             return
+        redirected_target = self._redirect_fatal_friendly_damage(target, actual_amount, source, source_pos, element)
+        if redirected_target is not target:
+            target = redirected_target
+            if hasattr(target, "abilities"):
+                before_abilities = actual_amount
+                actual_amount = target.abilities.modify_incoming_damage(actual_amount, source, source_pos, element, self)
+                blocked += max(0.0, before_abilities - actual_amount)
+            if isinstance(target, Troop):
+                before_armor = actual_amount
+                actual_amount = target.reduce_damage_by_armor(actual_amount)
+                blocked += max(0.0, before_armor - actual_amount)
+            if actual_amount <= 0:
+                self.record_blocks(target, blocked)
+                self.spawn_hit(target.pos, 2)
+                return
         self.record_blocks(target, blocked)
         metrics = self.metric_for(target)
         if metrics is not None:
@@ -915,6 +1065,26 @@ class ExpeditionRun:
         self.spawn_hit(target.pos, min(9, 3 + int(actual_amount / 8)))
         if killed and isinstance(target, Troop):
             self.kill_troop(target)
+
+    def _redirect_fatal_friendly_damage(self, target, amount: float, source, source_pos: pygame.Vector2 | None, element: str):
+        if amount <= 0 or not getattr(target, "alive", False) or not hasattr(target, "health"):
+            return target
+        if amount < float(getattr(target, "health", 0.0)):
+            return target
+        candidates = [
+            troop
+            for troop in self.nearby_troops(target.pos, 180.0)
+            if troop.alive and troop is not target and hasattr(troop, "abilities")
+        ]
+        candidates.sort(key=lambda troop: troop.pos.distance_to(target.pos))
+        for troop in candidates:
+            for ability in troop.abilities.abilities:
+                if not hasattr(ability, "try_intercept_fatal_damage"):
+                    continue
+                redirected = ability.try_intercept_fatal_damage(self, target, amount, source=source, source_pos=source_pos, element=element)
+                if redirected is not None:
+                    return redirected
+        return target
 
     def kill_troop(self, troop: Troop) -> None:
         if not troop.alive:
@@ -951,6 +1121,34 @@ class ExpeditionRun:
 
     def item_flag(self, effect_key: str) -> bool:
         return self.main_state.item_flag(effect_key) if hasattr(self.main_state, "item_flag") else False
+
+    def shield_generators(self) -> list:
+        return []
+
+    def heal_towers_and_buildings_full(self) -> int:
+        return 0
+
+    def heal_troops_full(self) -> int:
+        healed = 0
+        for troop in self.alive_troops:
+            if troop.health < troop.max_health:
+                healed += 1
+            troop.health = troop.max_health
+            self.spawn_hit(troop.pos, 2)
+        return healed
+
+    def grant_tower_xp_all(self, minimum: int, maximum: int) -> int:
+        return 0
+
+    def grant_troop_xp_all(self, minimum: int, maximum: int) -> int:
+        awarded = 0
+        for troop in self.alive_troops:
+            amount = self.rng.randint(minimum, maximum)
+            if troop.add_xp(amount):
+                self.texts.append(FloatingText(pygame.Vector2(troop.pos), "READY", 0.9))
+            awarded += amount
+            self.texts.append(FloatingText(pygame.Vector2(troop.pos), f"+{amount}XP", 0.7))
+        return awarded
 
     def add_item(self, item_id: str, quantity: int = 1) -> bool:
         if item_id not in ITEM_DEFINITIONS:
@@ -1048,7 +1246,7 @@ class ExpeditionRun:
             self.whisp_emit_timer -= dt
             while self.whisp_emit_timer <= 0.0:
                 self.whisp_emit_timer += WHISP_MOVING_INTERVAL
-                self._emit_motion_dust(previous_center, self.party_center, 16.0, chance_scale=1.0, force=True)
+                self._emit_motion_dust(previous_center, self.party_center, 16.0 * EXPEDITION_WHISP_SCALE, chance_scale=1.0, force=True)
         else:
             self.whisp_emit_timer = min(self.whisp_emit_timer, WHISP_IDLE_INTERVAL)
 
@@ -1141,8 +1339,15 @@ class ExpeditionRun:
     def _build_result(self, victory: bool, reason: str) -> ExpeditionResult:
         xp = dict(self.pending_xp)
         if victory:
-            for troop in self.alive_troops:
-                xp[id(troop)] = xp.get(id(troop), 0) + self.definition.rewards.completion_xp
+            survivors = self.alive_troops
+            if survivors:
+                completion_xp = max(0, int(self.definition.rewards.completion_xp))
+                base_share = completion_xp // len(survivors)
+                remainder = completion_xp % len(survivors)
+                for index, troop in enumerate(survivors):
+                    share = base_share + (1 if index < remainder else 0)
+                    if share > 0:
+                        xp[id(troop)] = xp.get(id(troop), 0) + share
         return ExpeditionResult(
             victory=victory,
             reason=reason,
@@ -1176,9 +1381,13 @@ class ExpeditionRun:
             if self.is_world_explored(zone.pos, zone.radius):
                 zone.draw(surface, self.camera, viewport)
         self._draw_party_leashes(surface, viewport)
+        selected_troops = set(getattr(self.main_state, "selected_troops", ()))
+        hovered_troop = None
+        if viewport.collidepoint(mouse_pos):
+            hovered_troop = self.find_troop_at(self.camera.screen_to_world(mouse_pos, viewport))
         for troop in self.troops:
             if troop.alive:
-                troop.draw(surface, self.camera, viewport)
+                troop.draw(surface, self.camera, viewport, troop in selected_troops, troop is hovered_troop)
         for enemy in self.enemies:
             if self.is_world_explored(enemy.pos, enemy.radius):
                 enemy.draw(surface, self.camera, viewport)
@@ -1251,17 +1460,18 @@ class ExpeditionRun:
         now = pygame.time.get_ticks() * 0.001
         pulse = 0.5 + 0.5 * math.sin(now * 2.8)
         moving = self.whisp_motion_intensity
-        draw_circle_alpha(surface, center, (8.0 + pulse * 2.0 + moving * 2.0) * zoom, config.PALETTE.white, int(46 + moving * 24), 1)
-        draw_circle_alpha(surface, center, (2.2 + pulse * 0.8 + moving * 0.8) * zoom, config.PALETTE.white, int(128 + moving * 48))
+        visual_scale = EXPEDITION_WHISP_SCALE
+        draw_circle_alpha(surface, center, (8.0 + pulse * 2.0 + moving * 2.0) * visual_scale * zoom, config.PALETTE.white, int(46 + moving * 24), 1)
+        draw_circle_alpha(surface, center, (2.2 + pulse * 0.8 + moving * 0.8) * visual_scale * zoom, config.PALETTE.white, int(128 + moving * 48))
         direction = pygame.Vector2(math.cos(self.facing_angle), math.sin(self.facing_angle))
-        nose = center + direction * (9.0 + pulse * 2.0) * zoom
-        draw_circle_alpha(surface, nose, (2.0 + moving * 0.8) * zoom, config.PALETTE.white, int(68 + moving * 40))
+        nose = center + direction * (9.0 + pulse * 2.0) * visual_scale * zoom
+        draw_circle_alpha(surface, nose, (2.0 + moving * 0.8) * visual_scale * zoom, config.PALETTE.white, int(68 + moving * 40))
         for index in range(4):
             angle = now * (0.7 + index * 0.09) + index * math.tau / 4
-            distance = (5.0 + index * 2.1 + pulse * 1.0) * zoom
+            distance = (5.0 + index * 2.1 + pulse * 1.0) * visual_scale * zoom
             point = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * distance
             alpha = int((34 + moving * 24) * (0.75 + 0.25 * math.sin(now * 1.4 + index)))
-            draw_circle_alpha(surface, point, max(1.2, (1.0 + index * 0.25) * zoom), config.PALETTE.white, alpha)
+            draw_circle_alpha(surface, point, max(1.0, (1.0 + index * 0.25) * visual_scale * zoom), config.PALETTE.white, alpha)
 
     def _draw_exit(self, surface: pygame.Surface, viewport: pygame.Rect, fonts: dict[str, pygame.font.Font]) -> None:
         if self.phase != "exit_open":
