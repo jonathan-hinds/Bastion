@@ -43,6 +43,7 @@ class TerrainRules:
 class TerrainCell:
     elevation: int = 0
     tile_name: str = MAIN_CENTER
+    layer_tile_names: tuple[str, ...] = ()
     feature: str | None = None
     feature_tile_name: str | None = None
     cliff_tile_name: str | None = None
@@ -179,7 +180,8 @@ class TerrainMap:
                 cell = self.cells[x][y]
                 cell.walkable = True
                 cell.feature_tile_name = STAIR_SOUTH_TILE if cell.feature == STAIR_SOUTH else None
-                cell.tile_name = self._base_tile_name((x, y))
+                cell.layer_tile_names = self._base_layer_tile_names((x, y))
+                cell.tile_name = cell.layer_tile_names[-1] if cell.layer_tile_names else MAIN_CENTER
                 cell.cliff_tile_name = self._cliff_tile_name((x, y))
                 cell.buildable = self._flat_buildable((x, y))
         self._rebuild_navigation_links()
@@ -269,9 +271,15 @@ class TerrainMap:
             return "outer"
         return "inner"
 
+    def _base_layer_tile_names(self, cell: tuple[int, int]) -> tuple[str, ...]:
+        elevation = max(0, self.elevation_at(cell))
+        return tuple(self._base_tile_name_at_level(cell, level) for level in range(elevation + 1))
+
     def _base_tile_name(self, cell: tuple[int, int]) -> str:
+        return self._base_tile_name_at_level(cell, self.elevation_at(cell))
+
+    def _base_tile_name_at_level(self, cell: tuple[int, int], level: int) -> str:
         x, y = cell
-        level = self.elevation_at(cell)
         n = self._void_kind((x, y - 1), level)
         s = self._void_kind((x, y + 1), level)
         w = self._void_kind((x - 1, y), level)

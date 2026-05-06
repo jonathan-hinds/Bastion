@@ -384,7 +384,7 @@ class ResourceHarvester:
         if self.target_deposit is not None and self.target_deposit.active:
             start = camera.world_to_screen(self.owner.pos, viewport)
             end = camera.world_to_screen(self.target_deposit.pos, viewport)
-            draw_line_alpha(surface, start, end, config.PALETTE.white, 32, 1)
+            draw_line_alpha(surface, start, end, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_ALPHA, 1)
 
 
 def _beam(start: pygame.Vector2, end: pygame.Vector2):

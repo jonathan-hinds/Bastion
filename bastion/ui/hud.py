@@ -17,11 +17,13 @@ from bastion.game.research import RESEARCH_DEFINITIONS
 from bastion.game.tower_defs import SPECIALIZATIONS, xp_needed
 from bastion.game.tower_mods import TOWER_MODS
 from bastion.game.units import ATTRIBUTE_ORDER, ATTRIBUTE_SHORT_LABELS, ExpeditionCampsite, HOUSE_CAPACITY, TROOP_DATA, TROOP_NAMES, troop_ability_cards
+from bastion.ui.minimap import MinimapPanel
 from bastion.ui.panel_window import PanelWindow
 from bastion.ui.widgets import Button
 
 
 BASE_TOOLBAR_ENTRY = ("build", "B", "Build")
+MAP_TOOLBAR_ENTRY = ("map", "M", "Map")
 LEVEL_TOOLBAR_ENTRY = ("level", "L", "Levels")
 HERO_TOOLBAR_ENTRY = ("hero", "H", "Hero")
 INSPECTOR_TOOLBAR_ENTRY = ("inspector", "N", "Inspect")
@@ -72,8 +74,10 @@ class HUD:
             "level": PanelWindow("level", "Bastion // Level Up", (560, 560), (220, 140)),
             "hero": PanelWindow("hero", "Bastion // Hero Hall", (860, 640), (180, 120)),
             "expedition": PanelWindow("expedition", "Bastion // Expedition", (720, 620), (170, 130)),
+            "map": PanelWindow("map", "Bastion // Map", (620, 470), (260, 130)),
             "inspector": PanelWindow("inspector", "Bastion // Inspector", (360, 640), (980, 120)),
         }
+        self.minimap = MinimapPanel()
         self.window_buttons: dict[str, list[Button]] = {}
         self.window_scrolls: dict[str, float] = {}
         self.window_hover_targets: dict[str, tuple | None] = {}
@@ -93,6 +97,9 @@ class HUD:
 
     def _mouse_pos(self) -> tuple[int, int]:
         return self.render_mouse_pos
+
+    def map_pan_direction(self) -> pygame.Vector2:
+        return self.minimap.pan_direction()
 
     def set_parent_window(self, parent_hwnd: int | None) -> None:
         for window in self.panel_windows.values():
@@ -216,12 +223,13 @@ class HUD:
             window.close()
         self.window_buttons.clear()
         self.window_hover_targets.clear()
+        self.minimap.release_input()
         self.dragging_panel = None
 
     def _toolbar_entries(self, state) -> list[tuple[str, str, str]]:
         if getattr(state, "expedition_run", None) is not None:
             return [INSPECTOR_TOOLBAR_ENTRY, EXPEDITION_METRICS_TOOLBAR_ENTRY]
-        entries = [BASE_TOOLBAR_ENTRY, LEVEL_TOOLBAR_ENTRY, INSPECTOR_TOOLBAR_ENTRY]
+        entries = [BASE_TOOLBAR_ENTRY, MAP_TOOLBAR_ENTRY, LEVEL_TOOLBAR_ENTRY, INSPECTOR_TOOLBAR_ENTRY]
         if self._living_barracks(state):
             entries.append(("units", "U", "Units"))
         if self._living_research_labs(state):
@@ -348,7 +356,14 @@ class HUD:
             self.dialog_scroll = 0.0
             self.dialog_scroll_max = 0.0
 
-    def handle_event(self, event: pygame.event.Event, state, screen_rect: pygame.Rect | None = None, viewport: pygame.Rect | None = None) -> bool:
+    def handle_event(
+        self,
+        event: pygame.event.Event,
+        state,
+        screen_rect: pygame.Rect | None = None,
+        viewport: pygame.Rect | None = None,
+        camera=None,
+    ) -> bool:
         if screen_rect is None or viewport is None:
             return False
 
@@ -356,6 +371,8 @@ class HUD:
             return self._handle_scroll(event, state, screen_rect, viewport)
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self.active_panel == "map" and not self._using_external_windows() and self.minimap.handle_mouse_up():
+                return True
             if self.hero_tree_dragging:
                 self.hero_tree_dragging = False
                 return True
@@ -391,6 +408,11 @@ class HUD:
             start = pygame.Vector2(self.item_drag["start_pos"])
             self.item_drag["active"] = self.item_drag["active"] or start.distance_to(event.pos) > 4
             return True
+
+        if event.type == pygame.MOUSEMOTION and self.active_panel == "map" and not self._using_external_windows():
+            content_rect = self._dialog_content_rect(self._active_panel_rect(screen_rect, viewport))
+            if self.minimap.handle_mouse_motion(event.pos, content_rect, state):
+                return True
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             pos = event.pos
@@ -436,6 +458,10 @@ class HUD:
                 orb_index = self._expedition_orb_at(pos, panel_rect, state)
                 if orb_index is not None:
                     self.expedition_drag_index = orb_index
+                    return True
+            if self.active_panel == "map" and not self._using_external_windows():
+                content_rect = self._dialog_content_rect(self._active_panel_rect(screen_rect, viewport))
+                if self.minimap.handle_mouse_down(pos, content_rect, state):
                     return True
 
             if self._blocks_world_input(pos, screen_rect, viewport, state):
@@ -745,7 +771,7 @@ class HUD:
                 self.expedition_metric_slots[int(slot)] = str(metric_id)
             self.expedition_metric_dropdown = None
 
-    def draw(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state) -> None:
+    def draw(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state, camera=None) -> None:
         self.render_mouse_pos = pygame.mouse.get_pos()
         self.tooltip_request = None
         self.layout_buttons(screen_rect, viewport, state)
@@ -753,7 +779,7 @@ class HUD:
         expedition_active = getattr(state, "expedition_run", None) is not None
 
         if self.active_panel and not state.round_events.awaiting_choice and (not self._using_external_windows() or self.active_panel == "expedition_metrics"):
-            self._draw_active_panel(surface, screen_rect, viewport, state)
+            self._draw_active_panel(surface, screen_rect, viewport, state, camera)
 
         if not state.round_events.awaiting_choice:
             if not expedition_active:
@@ -795,7 +821,7 @@ class HUD:
             self._draw_game_over(surface, viewport)
 
         if self._using_external_windows():
-            self._draw_external_windows(state)
+            self._draw_external_windows(state, camera, viewport)
 
     def handle_external_event(self, event: pygame.event.Event, state) -> bool:
         if not self._using_external_windows():
@@ -826,7 +852,7 @@ class HUD:
                 return True
         return False
 
-    def _draw_external_windows(self, state) -> None:
+    def _draw_external_windows(self, state, camera, viewport: pygame.Rect) -> None:
         if not self._using_external_windows():
             self.close_all_windows()
             return
@@ -836,8 +862,12 @@ class HUD:
         for panel, window in self.panel_windows.items():
             if not window.visible:
                 self.window_buttons[panel] = []
+                if panel == "map":
+                    self.minimap.release_input()
+                    if self.active_panel == "map":
+                        self.active_panel = None
                 continue
-            self._handle_panel_window_events(panel, window, state)
+            self._handle_panel_window_events(panel, window, state, camera, viewport)
             surface = window.surface()
             if surface is None:
                 self.window_buttons[panel] = []
@@ -872,6 +902,9 @@ class HUD:
             elif panel == "expedition":
                 self._draw_expedition_panel(surface, content_rect, state)
                 buttons = self._layout_expedition_buttons(content_rect, state)
+            elif panel == "map":
+                self._draw_map_panel(surface, content_rect, state, camera, viewport)
+                buttons = []
             elif panel == "inspector":
                 self._draw_context_inspector_panel(surface, content_rect, state)
                 buttons = self._layout_context_buttons_for_rect(content_rect, state)
@@ -889,18 +922,35 @@ class HUD:
             window.flip()
         PanelWindow.pump_events()
 
-    def _handle_panel_window_events(self, panel: str, window: PanelWindow, state) -> None:
+    def _handle_panel_window_events(self, panel: str, window: PanelWindow, state, camera, viewport: pygame.Rect) -> None:
         for event in window.pop_events():
+            if event.kind == "focus_out":
+                if panel == "map":
+                    self.minimap.release_input()
+                continue
+            if event.kind == "key":
+                if panel == "map":
+                    self.minimap.set_key(event.key, event.pressed)
+                continue
             if event.kind == "motion":
                 window.handle_mouse_motion(event.rel)
                 if panel == "hero" and self.hero_tree_dragging:
                     self._drag_hero_tree(event.pos)
+                if panel == "map":
+                    surface = window.surface()
+                    if event.pos == (-1, -1):
+                        self.minimap.handle_mouse_up()
+                    elif surface is not None:
+                        panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
+                        self.minimap.handle_mouse_motion(event.pos, self._dialog_content_rect(panel_rect), state)
                 self._update_panel_window_hover(panel, event.pos, state)
                 continue
             if event.kind == "up" and event.button == 1:
                 window.handle_mouse_up()
                 if panel == "hero":
                     self.hero_tree_dragging = False
+                if panel == "map":
+                    self.minimap.handle_mouse_up()
                 if panel == "expedition" and self.expedition_drag_index is not None:
                     surface = window.surface()
                     if surface is not None:
@@ -921,6 +971,8 @@ class HUD:
                 state.play_sound("menu_select")
                 if panel == "inspector" and title_action == "close":
                     self.inspector_enabled = False
+                if panel == "map" and title_action == "close":
+                    self.minimap.release_input()
                 if title_action == "close" and self.active_panel == panel:
                     self.active_panel = None
                 continue
@@ -943,6 +995,12 @@ class HUD:
                         orb_index = self._expedition_orb_at(pos, panel_rect, state)
                         if orb_index is not None:
                             self.expedition_drag_index = orb_index
+                elif panel == "map":
+                    surface = window.surface()
+                    if surface is not None:
+                        panel_rect = pygame.Rect(0, config.TITLE_BAR_HEIGHT, surface.get_width(), surface.get_height() - config.TITLE_BAR_HEIGHT)
+                        if self.minimap.handle_mouse_down(pos, self._dialog_content_rect(panel_rect), state):
+                            state.play_sound("menu_select")
 
     def _update_panel_window_hover(self, panel: str, pos: tuple[int, int], state) -> None:
         window = self.panel_windows.get(panel)
@@ -998,6 +1056,8 @@ class HUD:
         if panel == "hero":
             return content.height
         if panel == "expedition":
+            return content.height
+        if panel == "map":
             return content.height
         return content.height
 
@@ -1128,7 +1188,7 @@ class HUD:
             surface.blit(label, label.get_rect(center=(config.TOOLBAR_WIDTH // 2, y)))
             y += 48
 
-    def _draw_active_panel(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state) -> None:
+    def _draw_active_panel(self, surface: pygame.Surface, screen_rect: pygame.Rect, viewport: pygame.Rect, state, camera=None) -> None:
         rect = self._active_panel_rect(screen_rect, viewport)
         if self.active_panel == "build":
             self._draw_build_panel(surface, rect, state)
@@ -1144,6 +1204,8 @@ class HUD:
             self._draw_hero_panel(surface, rect, state)
         elif self.active_panel == "expedition":
             self._draw_expedition_panel(surface, rect, state)
+        elif self.active_panel == "map":
+            self._draw_map_panel(surface, rect, state, camera, viewport)
         elif self.active_panel == "expedition_metrics":
             self._draw_expedition_metrics_panel(surface, rect, state)
         elif self.active_panel == "inspector" and getattr(state, "expedition_run", None) is not None:
@@ -1180,6 +1242,9 @@ class HUD:
         elif panel == "expedition":
             width = min(720, max(520, viewport.width - 390))
             height = min(620, viewport.height - 34)
+        elif panel == "map":
+            width = min(620, max(460, viewport.width - 430))
+            height = min(470, viewport.height - 34)
         elif panel == "expedition_metrics":
             width = min(560, max(460, viewport.width - 520))
             height = min(650, viewport.height - 34)
@@ -1221,6 +1286,12 @@ class HUD:
         for index in range(5):
             dot_x = rect.centerx - 18 + index * 9
             pygame.draw.line(surface, palette.line_bright, (dot_x, rect.top + 11), (dot_x + 3, rect.top + 11), 1)
+
+    def _draw_map_panel(self, surface: pygame.Surface, rect: pygame.Rect, state, camera, viewport: pygame.Rect) -> None:
+        self._draw_dialog_shell(surface, rect, "Map", "Fog Recon")
+        content = self._dialog_content_rect(rect)
+        pygame.draw.rect(surface, config.PALETTE.black, content)
+        self.minimap.draw(surface, content, state, camera, viewport, self._mouse_pos())
 
     def _draw_build_panel(self, surface: pygame.Surface, rect: pygame.Rect, state) -> None:
         palette = config.PALETTE

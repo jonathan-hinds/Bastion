@@ -37,6 +37,19 @@ class TerrainGenerationTests(unittest.TestCase):
             },
         )
 
+    def test_high_elevation_cells_keep_lower_visual_layers(self):
+        elevations = [[0 for _ in range(5)] for _ in range(5)]
+        for x in range(1, 4):
+            for y in range(1, 4):
+                elevations[x][y] = 1
+        elevations[2][2] = 2
+        terrain = TerrainMap.from_elevations(elevations)
+
+        center = terrain.cell((2, 2))
+
+        self.assertEqual(center.tile_name, "single_platform_dot")
+        self.assertEqual(center.layer_tile_names, ("main_center", "main_center", "single_platform_dot"))
+
     def test_enclosed_cutout_tiles_follow_inner_9_rules(self):
         elevations = [[1 for _ in range(5)] for _ in range(5)]
         elevations[2][2] = 0
@@ -244,6 +257,28 @@ class TerrainGenerationTests(unittest.TestCase):
 
 
 class TerrainShadowTests(unittest.TestCase):
+    def test_shadow_map_includes_underlying_elevation_layers(self):
+        elevations = [[0 for _ in range(3)] for _ in range(3)]
+        elevations[1][1] = 1
+        terrain = TerrainMap.from_elevations(elevations)
+        calculator = TerrainShadowCalculator(
+            TerrainShadowSettings(
+                max_opacity=1.0,
+                elevation_step_opacity=0.4,
+                cardinal_higher_opacity=0.0,
+                diagonal_higher_opacity=0.0,
+                front_exposure_opacity=0.0,
+                depth_opacity=0.0,
+                bands=0,
+            )
+        )
+
+        layer_opacities = calculator.layer_opacity_map(terrain)[1][1]
+
+        self.assertEqual(len(layer_opacities), 2)
+        self.assertAlmostEqual(layer_opacities[0], 0.4)
+        self.assertAlmostEqual(layer_opacities[1], calculator.opacity_for(terrain, (1, 1), reference_elevation=1))
+
     def test_lower_tiles_get_shadow_from_reference_elevation(self):
         elevations = [[0 for _ in range(5)] for _ in range(5)]
         elevations[0][0] = 2

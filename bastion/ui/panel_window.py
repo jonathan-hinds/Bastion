@@ -22,6 +22,8 @@ class PanelEvent:
     button: int = 0
     rel: tuple[int, int] = (0, 0)
     wheel_y: int = 0
+    key: str = ""
+    pressed: bool = False
 
 
 class _TkHost:
@@ -211,6 +213,7 @@ class PanelWindow:
             self.window.bind("<Destroy>", self._handle_destroy, add="+")
             self.window.bind("<Escape>", lambda _event: self.close())
             self.window.update_idletasks()
+            self.label.focus_set()
             self._keep_in_front()
             _TkHost.register(self.panel_id, self.window)
             self._resize_buffer(*self.size)
@@ -469,12 +472,20 @@ class PanelWindow:
         widget.bind("<Button-4>", lambda event: self._queue_wheel(event, wheel_y=1))
         widget.bind("<Button-5>", lambda event: self._queue_wheel(event, wheel_y=-1))
         widget.bind("<Leave>", self._handle_leave)
+        widget.bind("<KeyPress>", lambda event: self._queue_key(event, True))
+        widget.bind("<KeyRelease>", lambda event: self._queue_key(event, False))
+        widget.bind("<FocusOut>", lambda _event: self.event_queue.append(PanelEvent(kind="focus_out")))
 
     def _queue_pointer(self, kind: str, event, button: int = 0) -> None:
         pos = (int(event.x), int(event.y))
         rel = (pos[0] - self.last_mouse_pos[0], pos[1] - self.last_mouse_pos[1])
         self.last_mouse_pos = pos
         self.mouse_pos = pos
+        if kind == "down" and self.label is not None:
+            try:
+                self.label.focus_set()
+            except tk.TclError:
+                pass
         if kind == "motion" and not self.dragging and not self.resizing:
             self._set_cursor(self._cursor_for_edges(self._resize_edges_at(pos)))
         self.event_queue.append(PanelEvent(kind=kind, pos=pos, button=button, rel=rel))
@@ -510,6 +521,10 @@ class PanelWindow:
         if wheel_y is None:
             wheel_y = 1 if int(getattr(event, "delta", 0)) > 0 else -1
         self.event_queue.append(PanelEvent(kind="wheel", pos=pos, wheel_y=wheel_y))
+
+    def _queue_key(self, event, pressed: bool) -> None:
+        key = str(getattr(event, "keysym", "")).lower()
+        self.event_queue.append(PanelEvent(kind="key", key=key, pressed=pressed))
 
 
 def global_mouse_position() -> tuple[int, int]:

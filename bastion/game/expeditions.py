@@ -1451,8 +1451,8 @@ class ExpeditionRun:
         center = self.camera.world_to_screen(self.party_center, viewport)
         for troop in self.alive_troops:
             troop_screen = self.camera.world_to_screen(troop.pos, viewport)
-            draw_line_alpha(surface, center, troop_screen, config.PALETTE.white, 28, max(1, int(self.camera.zoom)))
-            draw_circle_alpha(surface, troop_screen, max(3.0, 5.0 * self.camera.zoom), config.PALETTE.white, 22, 1)
+            draw_line_alpha(surface, center, troop_screen, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_ALPHA, max(1, int(self.camera.zoom)))
+            draw_circle_alpha(surface, troop_screen, max(3.0, 5.0 * self.camera.zoom), config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_NODE_ALPHA, 1)
 
     def _draw_party_whisp(self, surface: pygame.Surface, viewport: pygame.Rect) -> None:
         center = self.camera.world_to_screen(self.party_center, viewport)

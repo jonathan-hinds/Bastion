@@ -37,6 +37,19 @@ class TerrainShadowCalculator:
             for x in range(terrain.width)
         ]
 
+    def layer_opacity_map(self, terrain) -> list[list[tuple[float, ...]]]:
+        reference = self.reference_elevation(terrain)
+        return [
+            [
+                tuple(
+                    self.opacity_for_layer(terrain, (x, y), level, reference_elevation=reference)
+                    for level in range(max(0, terrain.elevation_at((x, y))) + 1)
+                )
+                for y in range(terrain.height)
+            ]
+            for x in range(terrain.width)
+        ]
+
     def reference_elevation(self, terrain) -> int:
         max_elevation = getattr(terrain, "max_elevation", None)
         if callable(max_elevation):
@@ -53,11 +66,26 @@ class TerrainShadowCalculator:
         *,
         reference_elevation: int | None = None,
     ) -> float:
+        return self.opacity_for_layer(
+            terrain,
+            cell,
+            terrain.elevation_at(cell),
+            reference_elevation=reference_elevation,
+        )
+
+    def opacity_for_layer(
+        self,
+        terrain,
+        cell: tuple[int, int],
+        layer_elevation: int,
+        *,
+        reference_elevation: int | None = None,
+    ) -> float:
         if not self.settings.enabled or not terrain.in_bounds(cell):
             return 0.0
 
         _, y = cell
-        elevation = terrain.elevation_at(cell)
+        elevation = max(0, int(layer_elevation))
         reference = self.reference_elevation(terrain) if reference_elevation is None else int(reference_elevation)
         shadow = 0.0
         shadow += self._depth_opacity(y, terrain.height)

@@ -1085,7 +1085,14 @@ class Tower:
     def draw_range(self, surface: pygame.Surface, camera, viewport: pygame.Rect, game=None) -> None:
         stats = self.stats(game)
         screen = camera.world_to_screen(self.pos, viewport)
-        draw_circle_alpha(surface, screen, float(stats["range"]) * camera.zoom, config.PALETTE.white, 32, 1)
+        draw_circle_alpha(
+            surface,
+            screen,
+            float(stats["range"]) * camera.zoom,
+            config.TACTICAL_OVERLAY_COLOR,
+            config.TACTICAL_OVERLAY_ALPHA,
+            1,
+        )
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, selected: bool = False, hovered: bool = False) -> None:
         scale = hover_feedback.hover_scale(hovered)

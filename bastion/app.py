@@ -138,7 +138,7 @@ class BastionApp:
                     self.hud.close_all_windows()
                 continue
             elif event.type == pygame.MOUSEWHEEL:
-                if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
+                if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
                 mouse = pygame.mouse.get_pos()
                 if viewport.collidepoint(mouse):
@@ -147,7 +147,7 @@ class BastionApp:
                 if event.button == 1 and event.pos[1] < config.TITLE_BAR_HEIGHT:
                     self.handle_title_bar_click(event.pos)
                     continue
-                if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
+                if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
                 if self.state.expedition_run is not None:
                     if self.state.expedition_run.handle_event(event, viewport):
@@ -172,7 +172,7 @@ class BastionApp:
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     self.title_dragging = False
-                if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
+                if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
                 if self.state.expedition_run is not None and viewport.collidepoint(event.pos):
                     continue
@@ -183,7 +183,7 @@ class BastionApp:
             elif event.type == pygame.MOUSEMOTION and self.title_dragging:
                 self.move_window(event.rel)
             elif event.type == pygame.MOUSEMOTION:
-                if self.hud.handle_event(event, self.state, self.screen_rect, viewport):
+                if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
                 if self.dragging:
                     current = pygame.Vector2(event.pos)
@@ -306,6 +306,8 @@ class BastionApp:
             self.state.paused = not self.state.paused
         elif event.key == pygame.K_b:
             self.toggle_hud_panel("build")
+        elif event.key == pygame.K_m and self.state.expedition_run is None:
+            self.toggle_hud_panel("map")
         elif event.key == pygame.K_u:
             if self.hud._living_barracks(self.state):
                 self.toggle_hud_panel("units")
@@ -409,6 +411,7 @@ class BastionApp:
             direction.y -= 1
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:
             direction.y += 1
+        direction += self.hud.map_pan_direction()
         if direction.length_squared() > 0:
             direction = direction.normalize()
             self.camera.pan_world_delta(direction * config.PAN_SPEED * dt / self.camera.zoom, self.viewport)
@@ -469,7 +472,7 @@ class BastionApp:
             self.camera.clamp_to_world(viewport)
             self.state.draw_world(self.screen, self.camera, viewport, self.fonts, pygame.mouse.get_pos(), self.hover_audio_target)
             self.draw_selection_box(viewport)
-        self.hud.draw(self.screen, self.screen_rect, viewport, self.state)
+        self.hud.draw(self.screen, self.screen_rect, viewport, self.state, self.camera)
         self.pause_menu.draw(self.screen, self.screen_rect, self.audio)
         pygame.display.flip()
 

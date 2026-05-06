@@ -26,6 +26,7 @@ class TerrainChunkRenderer:
         grid,
         shadow_opacity: list[list[float]] | None,
         frame_offsets: list[list[int]],
+        layer_shadow_opacity: list[list[tuple[float, ...]]] | None = None,
     ) -> bool:
         atlas = terrain_sprite_atlas()
         if atlas is None:
@@ -56,6 +57,7 @@ class TerrainChunkRenderer:
                     base_frame,
                     frame_count,
                     tile_px,
+                    layer_shadow_opacity,
                 )
                 world_x = chunk_x * self.chunk_tiles * grid.tile_size
                 world_y = chunk_y * self.chunk_tiles * grid.tile_size
@@ -71,6 +73,7 @@ class TerrainChunkRenderer:
         grid,
         shadow_opacity: list[list[float]] | None,
         frame_offsets: list[list[int]],
+        layer_shadow_opacity: list[list[tuple[float, ...]]] | None = None,
     ) -> None:
         atlas = terrain_sprite_atlas()
         if atlas is None:
@@ -97,6 +100,7 @@ class TerrainChunkRenderer:
                         base_frame,
                         frame_count,
                         tile_px,
+                        layer_shadow_opacity,
                     )
 
     def _chunk_surface(
@@ -110,6 +114,7 @@ class TerrainChunkRenderer:
         base_frame: int,
         frame_count: int,
         tile_px: int,
+        layer_shadow_opacity: list[list[tuple[float, ...]]] | None = None,
     ) -> pygame.Surface:
         cache_key = (chunk_x, chunk_y, base_frame, tile_px)
         cached = self._cache.get(cache_key)
@@ -128,16 +133,21 @@ class TerrainChunkRenderer:
                 x = start_x + local_x
                 terrain_cell = grid.terrain.cells[x][y]
                 frame_index = (base_frame + frame_offsets[x][y]) % frame_count
-                alpha = int(round((shadow_opacity[x][y] if shadow_opacity is not None else 0.0) * 255))
-                image = atlas.shaded_frame(terrain_cell.tile_name, frame_index, (tile_px, tile_px), alpha)
                 dest = pygame.Rect(local_x * tile_px, local_y * tile_px, tile_px, tile_px)
-                if image is None:
-                    shade = max(18, min(68, 28 + terrain_cell.elevation * 15))
-                    pygame.draw.rect(chunk, (shade, shade, shade), dest)
-                    if alpha > 0:
-                        draw_rect_alpha(chunk, dest, config.PALETTE.black, alpha)
-                else:
-                    chunk.blit(image, dest)
+                layer_tile_names = terrain_cell.layer_tile_names or (terrain_cell.tile_name,)
+                layer_opacities = layer_shadow_opacity[x][y] if layer_shadow_opacity is not None else (shadow_opacity[x][y] if shadow_opacity is not None else 0.0,)
+                for layer_index, tile_name in enumerate(layer_tile_names):
+                    opacity = layer_opacities[layer_index] if layer_index < len(layer_opacities) else (shadow_opacity[x][y] if shadow_opacity is not None else 0.0)
+                    layer_alpha = int(round(opacity * 255))
+                    image = atlas.shaded_frame(tile_name, frame_index, (tile_px, tile_px), layer_alpha)
+                    if image is None:
+                        if layer_index == 0:
+                            shade = max(18, min(68, 28 + layer_index * 15))
+                            pygame.draw.rect(chunk, (shade, shade, shade), dest)
+                        if layer_alpha > 0:
+                            draw_rect_alpha(chunk, dest, config.PALETTE.black, layer_alpha)
+                    else:
+                        chunk.blit(image, dest)
 
         for local_y in range(height_tiles):
             y = start_y + local_y

@@ -137,6 +137,7 @@ class GameState:
         self.grid = GameGrid()
         self.terrain_shadows = TerrainShadowCalculator()
         self._terrain_shadow_opacity = self.terrain_shadows.opacity_map(self.grid.terrain)
+        self._terrain_layer_shadow_opacity = self.terrain_shadows.layer_opacity_map(self.grid.terrain)
         self._terrain_frame_offsets = self._build_terrain_frame_offsets()
         self._terrain_renderer = TerrainChunkRenderer()
         self.fog = None
@@ -2855,7 +2856,14 @@ class GameState:
         terrain_renderer = getattr(self, "_terrain_renderer", None)
         frame_offsets = getattr(self, "_terrain_frame_offsets", None)
         if terrain_renderer is not None and frame_offsets is not None:
-            terrain_renderer.prewarm(camera, viewport, self.grid, getattr(self, "_terrain_shadow_opacity", None), frame_offsets)
+            terrain_renderer.prewarm(
+                camera,
+                viewport,
+                self.grid,
+                getattr(self, "_terrain_shadow_opacity", None),
+                frame_offsets,
+                getattr(self, "_terrain_layer_shadow_opacity", None),
+            )
 
     def _visible_world_bounds(self, camera, viewport: pygame.Rect, margin: float = 0.0) -> tuple[float, float, float, float]:
         top_left = camera.screen_to_world(viewport.topleft, viewport)
@@ -2985,11 +2993,20 @@ class GameState:
         terrain_renderer = getattr(self, "_terrain_renderer", None)
         frame_offsets = getattr(self, "_terrain_frame_offsets", None)
         if terrain_renderer is not None and frame_offsets is not None:
-            if terrain_renderer.draw(surface, camera, viewport, self.grid, getattr(self, "_terrain_shadow_opacity", None), frame_offsets):
+            if terrain_renderer.draw(
+                surface,
+                camera,
+                viewport,
+                self.grid,
+                getattr(self, "_terrain_shadow_opacity", None),
+                frame_offsets,
+                getattr(self, "_terrain_layer_shadow_opacity", None),
+            ):
                 return
 
         x0, y0, x1, y1 = camera.visible_tile_bounds(viewport, self.grid.tile_size, self.grid.width, self.grid.height)
         shadow_opacity_map = getattr(self, "_terrain_shadow_opacity", None)
+        layer_shadow_opacity_map = getattr(self, "_terrain_layer_shadow_opacity", None)
         frame_offsets = getattr(self, "_terrain_frame_offsets", None)
         terrain_time = pygame.time.get_ticks() * 0.001
 
@@ -2999,13 +3016,32 @@ class GameState:
                 terrain_cell = self.grid.terrain.cell(cell)
                 frame_index = self._terrain_frame_index(frame_offsets, x, y, terrain_time)
                 shadow_opacity = shadow_opacity_map[x][y] if shadow_opacity_map is not None else self.terrain_shadows.opacity_for(self.grid.terrain, cell)
-                rect = draw_terrain_tile_shaded(surface, camera, viewport, cell, terrain_cell.tile_name, self.grid.tile_size, shadow_opacity, frame_index=frame_index)
-                if rect is None:
-                    rect = self._cell_screen_rect(cell, camera, viewport)
-                    shade = max(18, min(68, 28 + terrain_cell.elevation * 15))
-                    pygame.draw.rect(surface, (shade, shade, shade), rect)
-                    if shadow_opacity > 0:
-                        draw_rect_alpha(surface, rect, config.PALETTE.black, int(round(shadow_opacity * 255)))
+                layer_tile_names = terrain_cell.layer_tile_names or (terrain_cell.tile_name,)
+                layer_shadow_opacities = (
+                    layer_shadow_opacity_map[x][y]
+                    if layer_shadow_opacity_map is not None
+                    else tuple(self.terrain_shadows.opacity_for_layer(self.grid.terrain, cell, level) for level in range(len(layer_tile_names)))
+                )
+                rect = None
+                for layer_index, tile_name in enumerate(layer_tile_names):
+                    layer_opacity = layer_shadow_opacities[layer_index] if layer_index < len(layer_shadow_opacities) else shadow_opacity
+                    rect = draw_terrain_tile_shaded(
+                        surface,
+                        camera,
+                        viewport,
+                        cell,
+                        tile_name,
+                        self.grid.tile_size,
+                        layer_opacity,
+                        frame_index=frame_index,
+                    )
+                    if rect is None:
+                        rect = self._cell_screen_rect(cell, camera, viewport)
+                        if layer_index == 0:
+                            shade = max(18, min(68, 28 + layer_index * 15))
+                            pygame.draw.rect(surface, (shade, shade, shade), rect)
+                        if layer_opacity > 0:
+                            draw_rect_alpha(surface, rect, config.PALETTE.black, int(round(layer_opacity * 255)))
 
         for y in range(y0, y1):
             for x in range(x0, x1):
@@ -3059,7 +3095,14 @@ class GameState:
         scale = hover_feedback.hover_scale(hovered)
 
         if isinstance(building, Torch):
-            draw_circle_alpha(surface, center, building.aggro_radius * camera.zoom, config.PALETTE.white, 34 if selected else 18, 1)
+            draw_circle_alpha(
+                surface,
+                center,
+                building.aggro_radius * camera.zoom,
+                config.TACTICAL_OVERLAY_COLOR,
+                config.TACTICAL_OVERLAY_ALPHA if selected else config.TACTICAL_OVERLAY_SOFT_ALPHA,
+                1,
+            )
             rect = draw_tower_sprite(
                 surface,
                 camera,
@@ -3089,7 +3132,14 @@ class GameState:
                 draw_circle_alpha(surface, center, BUILDING_SPRITE_WORLD_SIZE * camera.zoom * (0.52 + 0.04 * math.sin(phase * 2.0)), config.PALETTE.white, alpha, 1)
         else:
             if isinstance(building, TrainingGrounds):
-                draw_circle_alpha(surface, center, building.training_radius * camera.zoom, config.PALETTE.white, 32 if selected else 14, 1)
+                draw_circle_alpha(
+                    surface,
+                    center,
+                    building.training_radius * camera.zoom,
+                    config.TACTICAL_OVERLAY_COLOR,
+                    config.TACTICAL_OVERLAY_ALPHA if selected else config.TACTICAL_OVERLAY_SOFT_ALPHA,
+                    1,
+                )
             variant = None
             if isinstance(building, MineralExtractor):
                 variant = "gold" if getattr(building.deposit, "kind", "") == "gold" else "mineral"
@@ -3275,8 +3325,8 @@ class GameState:
 
         points = [camera.world_to_screen(self.grid.world_center(cell), viewport) for cell in path]
         width = max(1, int((3 if preview else 2) * camera.zoom))
-        alpha = 68 if preview else 48
-        trace_color = (138, 138, 138)
+        alpha = config.ARCANE_PATH_PREVIEW_ALPHA if preview else config.ARCANE_PATH_ALPHA
+        trace_color = config.ARCANE_PATH_COLOR
         for start, end in zip(points, points[1:]):
             segment_rect = pygame.Rect(
                 min(start.x, end.x),
@@ -3299,13 +3349,19 @@ class GameState:
             node = pygame.Rect(0, 0, node_size, node_size)
             node.center = (round(point.x), round(point.y))
             if node.colliderect(viewport):
-                draw_rect_alpha(surface, node, trace_color, 72 if preview else 42)
+                draw_rect_alpha(
+                    surface,
+                    node,
+                    trace_color,
+                    config.ARCANE_PATH_PREVIEW_NODE_ALPHA if preview else config.ARCANE_PATH_NODE_ALPHA,
+                )
 
         pulse = self._point_on_polyline(points, (pygame.time.get_ticks() * 0.001 * 0.72 + phase) % 1.0)
         if pulse is None:
             return
-        draw_circle_alpha(surface, pulse, max(5, 7 * camera.zoom), config.PALETTE.white, 34 if not preview else 54, 1)
-        draw_circle_alpha(surface, pulse, max(2, 3.4 * camera.zoom), config.PALETTE.white, 138 if not preview else 176)
+        pulse_alpha = config.ARCANE_PATH_PREVIEW_PULSE_ALPHA if preview else config.ARCANE_PATH_PULSE_ALPHA
+        draw_circle_alpha(surface, pulse, max(5, 7 * camera.zoom), trace_color, max(32, int(pulse_alpha * 0.36)), 1)
+        draw_circle_alpha(surface, pulse, max(2, 3.4 * camera.zoom), trace_color, pulse_alpha)
 
     def _point_on_polyline(self, points: list[pygame.Vector2], progress: float) -> pygame.Vector2 | None:
         if len(points) < 2:
@@ -3445,13 +3501,13 @@ class GameState:
         if mode in TOWER_BLUEPRINTS:
             stats = stats_for(mode, 1)
             center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
-            draw_circle_alpha(surface, center, float(stats["range"]) * camera.zoom, config.PALETTE.white, 22, 1)
+            draw_circle_alpha(surface, center, float(stats["range"]) * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "torch":
             center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
-            draw_circle_alpha(surface, center, Torch.aggro_radius * camera.zoom, config.PALETTE.white, 22, 1)
+            draw_circle_alpha(surface, center, Torch.aggro_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "training_grounds":
             center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
-            draw_circle_alpha(surface, center, TrainingGrounds.training_radius * camera.zoom, config.PALETTE.white, 22, 1)
+            draw_circle_alpha(surface, center, TrainingGrounds.training_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "expedition_campsite":
             center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
             for index in range(5):

@@ -14,6 +14,27 @@ from bastion.game.elements import ElementalEffect
 from bastion.game.tower_mods import TOWER_MODS
 
 
+def _tactical_preview_alpha(ready: bool = True) -> int:
+    return config.TACTICAL_OVERLAY_ALPHA if ready else config.TACTICAL_OVERLAY_SOFT_ALPHA
+
+
+def _draw_tactical_preview_circle(
+    surface: pygame.Surface,
+    screen: pygame.Vector2,
+    radius: float,
+    alpha: int | None = None,
+    width: int = 1,
+) -> None:
+    draw_circle_alpha(
+        surface,
+        screen,
+        radius,
+        config.TACTICAL_OVERLAY_COLOR,
+        config.TACTICAL_OVERLAY_ALPHA if alpha is None else alpha,
+        width,
+    )
+
+
 @dataclass(frozen=True)
 class AbilityCard:
     ability_id: str
@@ -1223,8 +1244,7 @@ class TauntAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        alpha = 34 if self.ready else 14
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, alpha, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class ChainLightningAbility(GameplayAbility):
@@ -1315,8 +1335,7 @@ class ChainLightningAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        alpha = 30 if self.ready else 12
-        draw_circle_alpha(surface, screen, self.effective_radius(None) * camera.zoom, config.PALETTE.white, alpha, 1)
+        _draw_tactical_preview_circle(surface, screen, self.effective_radius(None) * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class SupportOverTimeAbility(GameplayAbility):
@@ -1411,7 +1430,7 @@ class SupportOverTimeAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 22, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom)
 
 
 class HealTroopAbility(SupportOverTimeAbility):
@@ -1600,7 +1619,7 @@ class GuardianInterceptAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 18 if self.ready else 8, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class DamageBlockAbility(GameplayAbility):
@@ -1705,7 +1724,7 @@ class VisionMarkConeAbility(GameplayAbility):
         target = getattr(self.owner, "target", None)
         if target is None:
             return
-        _draw_cone_preview(surface, camera, viewport, self.owner, target, _owner_range(self.owner, None, 215.0), self.angle_degrees, 22 if self.ready else 10)
+        _draw_cone_preview(surface, camera, viewport, self.owner, target, _owner_range(self.owner, None, 215.0), self.angle_degrees, _tactical_preview_alpha(self.ready))
 
 
 class OutOfCombatRegenerationPassive(PassiveAbility):
@@ -1850,7 +1869,7 @@ class ConsecrationAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 24 if self.ready else 10, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class HolyAuraPassive(PassiveAbility):
@@ -1886,7 +1905,7 @@ class HolyAuraPassive(PassiveAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 18, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom)
 
 
 class InnerFireRetaliationAbility(GameplayAbility):
@@ -2164,7 +2183,7 @@ class ElectricJoltPassive(PassiveAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 16, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom)
 
 
 class FrostNovaAbility(GameplayAbility):
@@ -2211,7 +2230,7 @@ class FrostNovaAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 22 if self.ready else 9, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class DragonBreathAbility(GameplayAbility):
@@ -2262,7 +2281,7 @@ class DragonBreathAbility(GameplayAbility):
         if target is None:
             return
         reach = self.range_override if self.range_override is not None else max(120.0, _owner_range(self.owner, None, 120.0))
-        _draw_cone_preview(surface, camera, viewport, self.owner, target, reach, self.angle_degrees, 22 if self.ready else 9)
+        _draw_cone_preview(surface, camera, viewport, self.owner, target, reach, self.angle_degrees, _tactical_preview_alpha(self.ready))
 
 
 class AttackRangeSlowAuraPassive(PassiveAbility):
@@ -2364,7 +2383,7 @@ class SiphonLifeAbility(GameplayAbility):
 
     def draw_preview(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         screen = camera.world_to_screen(self.owner.pos, viewport)
-        draw_circle_alpha(surface, screen, self.radius * camera.zoom, config.PALETTE.white, 22 if self.ready else 9, 1)
+        _draw_tactical_preview_circle(surface, screen, self.radius * camera.zoom, _tactical_preview_alpha(self.ready), 1)
 
 
 class ArcaneFocusAbility(GameplayAbility):
@@ -2985,9 +3004,9 @@ def _draw_cone_preview(
     start = camera.world_to_screen(origin, viewport)
     a = camera.world_to_screen(origin + left * reach, viewport)
     b = camera.world_to_screen(origin + right * reach, viewport)
-    draw_line_alpha(surface, start, a, config.PALETTE.white, alpha, 1)
-    draw_line_alpha(surface, start, b, config.PALETTE.white, alpha, 1)
-    draw_line_alpha(surface, a, b, config.PALETTE.white, max(6, int(alpha * 0.6)), 1)
+    draw_line_alpha(surface, start, a, config.TACTICAL_OVERLAY_COLOR, alpha, 1)
+    draw_line_alpha(surface, start, b, config.TACTICAL_OVERLAY_COLOR, alpha, 1)
+    draw_line_alpha(surface, a, b, config.TACTICAL_OVERLAY_COLOR, max(config.TACTICAL_OVERLAY_SOFT_ALPHA, int(alpha * 0.6)), 1)
 
 
 def _is_combat_stat_modifier(effects: dict[str, object]) -> bool:

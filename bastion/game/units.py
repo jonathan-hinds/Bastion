@@ -450,8 +450,8 @@ class Torch:
         pygame.draw.circle(surface, mark, flame, flame_r, max(1, int(camera.zoom)))
         pygame.draw.line(surface, mark, flame + pygame.Vector2(-flame_r, flame_r), flame + pygame.Vector2(flame_r, -flame_r), max(1, int(camera.zoom)))
 
-        aura_alpha = 34 if selected else 18
-        draw_circle_alpha(surface, center, self.aggro_radius * camera.zoom, config.PALETTE.white, aura_alpha, 1)
+        aura_alpha = config.TACTICAL_OVERLAY_ALPHA if selected else config.TACTICAL_OVERLAY_SOFT_ALPHA
+        draw_circle_alpha(surface, center, self.aggro_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, aura_alpha, 1)
         if selected:
             draw_circle_alpha(surface, center, size * 0.70, config.PALETTE.white, 58, 1)
 
@@ -531,7 +531,8 @@ class TrainingGrounds:
         marker = center + pygame.Vector2(math.cos(phase), math.sin(phase)) * size * 0.20
         pygame.draw.circle(surface, mark, marker, max(2, int(2.5 * camera.zoom)))
 
-        draw_circle_alpha(surface, center, self.training_radius * camera.zoom, config.PALETTE.white, 32 if selected else 14, 1)
+        training_alpha = config.TACTICAL_OVERLAY_ALPHA if selected else config.TACTICAL_OVERLAY_SOFT_ALPHA
+        draw_circle_alpha(surface, center, self.training_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, training_alpha, 1)
         if selected:
             draw_circle_alpha(surface, center, size * 0.72, config.PALETTE.white, 58, 1)
 
@@ -1668,9 +1669,16 @@ class Troop:
 
     def draw_station(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         station = camera.world_to_screen(self.station, viewport)
-        draw_circle_alpha(surface, station, self.effective_station_range() * camera.zoom, config.PALETTE.white, 24, 1)
+        draw_circle_alpha(
+            surface,
+            station,
+            self.effective_station_range() * camera.zoom,
+            config.TACTICAL_OVERLAY_COLOR,
+            config.TACTICAL_OVERLAY_ALPHA,
+            1,
+        )
         pos = camera.world_to_screen(self.pos, viewport)
-        draw_line_alpha(surface, pos, station, config.PALETTE.white, 50, 1)
+        draw_line_alpha(surface, pos, station, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_ALPHA, 1)
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, selected: bool = False, hovered: bool = False) -> None:
         screen = camera.world_to_screen(self.pos, viewport)
