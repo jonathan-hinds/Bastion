@@ -45,6 +45,7 @@ class GameGrid:
         self._path_cache: dict[tuple[tuple[int, int], tuple[int, int], int], list[tuple[float, float]]] = {}
         self._cell_clear_cache: dict[tuple[tuple[int, int], int], bool] = {}
         self._neighbor_cache: dict[tuple[tuple[int, int], int], list[tuple[tuple[int, int], float]]] = {}
+        self._base_component_ids: list[list[int]] = []
         self.recompute_flow()
 
     @property
@@ -132,6 +133,7 @@ class GameGrid:
                     continue
                 self.distances[nx][ny] = int(current or 0) + 1
                 queue.append(neighbor)
+        self._base_component_ids = self._build_base_navigation_components()
         self._recompute_flow_vectors()
         self.nav_version += 1
         self._path_cache.clear()
@@ -265,6 +267,10 @@ class GameGrid:
                 path[0] = start_point
             return path
 
+        if not self._same_base_navigation_component(start, goal):
+            self._remember_path(cache_key, [])
+            return []
+
         frontier: list[tuple[float, int, tuple[int, int]]] = []
         counter = 0
         heapq.heappush(frontier, (0.0, counter, start))
@@ -287,6 +293,7 @@ class GameGrid:
                 came_from[neighbor] = current
 
         if goal not in came_from:
+            self._remember_path(cache_key, [])
             return []
 
         cells: list[tuple[int, int]] = []
@@ -299,10 +306,17 @@ class GameGrid:
         if path:
             path[0] = pygame.Vector2(start_point)
         path = self.smooth_path(path, query_radius)
+        self._remember_path(cache_key, [(point.x, point.y) for point in path])
+        return [pygame.Vector2(point) for point in path]
+
+    def _remember_path(
+        self,
+        cache_key: tuple[tuple[int, int], tuple[int, int], int],
+        path: list[tuple[float, float]],
+    ) -> None:
         if len(self._path_cache) > 2048:
             self._path_cache.clear()
-        self._path_cache[cache_key] = [(point.x, point.y) for point in path]
-        return [pygame.Vector2(point) for point in path]
+        self._path_cache[cache_key] = path
 
     def smooth_path(self, path: list[pygame.Vector2], radius: float) -> list[pygame.Vector2]:
         if len(path) <= 2:
@@ -472,6 +486,8 @@ class GameGrid:
                     recovered = self.nearest_clear_world(previous, radius)
                 previous = recovered
                 collided = True
+            if self.circle_clear(point, radius) and self.cell_from_world(previous) == self.cell_from_world(point):
+                return self._clamp_world(point, radius), collided
             if self.line_clear(previous, point, radius):
                 return self._clamp_world(point, radius), collided
             slid = self._slide_circle(previous, point, radius)
@@ -816,9 +832,9 @@ class GameGrid:
             if abs(dx) > 1 or abs(dy) > 1:
                 return False
             if dx != 0 and dy != 0:
-                if not self._can_step_diagonal(previous_cell, dx, dy) and not self._terrain_stair_overlap_compatible(previous_cell, cell):
+                if not self._can_step_diagonal(previous_cell, dx, dy):
                     return False
-            elif not self._can_move_between(previous_cell, cell) and not self._terrain_stair_overlap_compatible(previous_cell, cell):
+            elif not self._can_move_between(previous_cell, cell):
                 return False
             previous_cell = cell
         return True
@@ -840,17 +856,51 @@ class GameGrid:
                 candidate = (x + dx, y + dy)
                 if not self._cell_clear_for_radius(candidate, query_radius):
                     continue
-                stair_overlap = self._terrain_stair_overlap_compatible(cell, candidate)
-                if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy) and not stair_overlap:
+                if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy):
                     continue
                 terrain_cost = self.terrain.movement_cost(cell, candidate)
-                if math.isinf(terrain_cost) and stair_overlap:
-                    terrain_cost = math.sqrt(2) + 0.35
                 if math.isinf(terrain_cost):
                     continue
                 neighbors.append((candidate, terrain_cost))
         self._neighbor_cache[cache_key] = neighbors
         return neighbors
+
+    def _same_base_navigation_component(self, start: tuple[int, int], goal: tuple[int, int]) -> bool:
+        if not self.in_bounds(start) or not self.in_bounds(goal) or not self._base_component_ids:
+            return False
+        start_component = self._base_component_ids[start[0]][start[1]]
+        return start_component >= 0 and start_component == self._base_component_ids[goal[0]][goal[1]]
+
+    def _build_base_navigation_components(self) -> list[list[int]]:
+        components = [[-1 for _ in range(self.height)] for _ in range(self.width)]
+        component_id = 0
+        for x in range(self.width):
+            for y in range(self.height):
+                cell = (x, y)
+                if components[x][y] >= 0 or not self.passable(cell):
+                    continue
+                pending = [cell]
+                components[x][y] = component_id
+                while pending:
+                    current = pending.pop()
+                    cx, cy = current
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            if dx == 0 and dy == 0:
+                                continue
+                            candidate = (cx + dx, cy + dy)
+                            if dx != 0 and dy != 0:
+                                if not self._can_step_diagonal(current, dx, dy):
+                                    continue
+                            elif not self._can_move_between(current, candidate):
+                                continue
+                            nx, ny = candidate
+                            if components[nx][ny] >= 0:
+                                continue
+                            components[nx][ny] = component_id
+                            pending.append(candidate)
+                component_id += 1
+        return components
 
     def _cell_clear_for_radius(self, cell: tuple[int, int], radius: float) -> bool:
         radius_key = self._radius_key(radius)

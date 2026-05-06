@@ -8,9 +8,22 @@ import random
 import pygame
 
 from bastion import config
-from bastion.engine.drawing import draw_circle_alpha, draw_ellipse_alpha, draw_line_alpha, draw_rect_alpha
+from bastion.engine.drawing import draw_circle_alpha, draw_ellipse_alpha, draw_line_alpha, draw_rect_alpha, draw_soft_rect_alpha
 from bastion.engine import hover_feedback
-from bastion.engine.sprites import draw_building_sprite, draw_building_sprite_at, draw_terrain_shadow_overlay, draw_terrain_tile, draw_tower_sprite, terrain_sprite_frame
+from bastion.engine.tilemap import TerrainChunkRenderer
+from bastion.engine.sprites import (
+    FRAME_SIZE,
+    TERRAIN_FRAME_COUNT,
+    TERRAIN_FRAME_SECONDS,
+    draw_building_sprite,
+    draw_building_sprite_at,
+    draw_terrain_tile,
+    draw_terrain_tile_shaded,
+    draw_tower_sprite,
+    enemy_attack_sprite_sheet,
+    enemy_sprite_sheet,
+    troop_sprite_sheet,
+)
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
@@ -123,6 +136,9 @@ class GameState:
     def reset(self) -> None:
         self.grid = GameGrid()
         self.terrain_shadows = TerrainShadowCalculator()
+        self._terrain_shadow_opacity = self.terrain_shadows.opacity_map(self.grid.terrain)
+        self._terrain_frame_offsets = self._build_terrain_frame_offsets()
+        self._terrain_renderer = TerrainChunkRenderer()
         self.fog = None
         self.wave_manager = WaveManager(self.grid)
         self.ambient_mobs = AmbientMobManager(self.grid)
@@ -2655,6 +2671,7 @@ class GameState:
             self._draw_core_reserve_hover(surface, camera, viewport, mouse_pos)
         if mouse_in_world:
             self._draw_build_preview(surface, camera, viewport, mouse_pos)
+        world_bounds = self._visible_world_bounds(camera, viewport, margin=self.grid.tile_size * 4)
 
         if self.selected_tower:
             self.selected_tower.draw_range(surface, camera, viewport, self)
@@ -2670,6 +2687,8 @@ class GameState:
 
         render_jobs = []
         for core in self.core_targets:
+            if not self._world_circle_in_bounds(core.pos, CORE_SPRITE_WORLD_SIZE * 0.72, world_bounds):
+                continue
             render_jobs.append((
                 *self._render_sort_key(core.pos, 30),
                 lambda core=core: self._draw_shadowed_structure(
@@ -2683,20 +2702,28 @@ class GameState:
             ))
 
         for deposit in self.resource_deposits:
+            if not self._world_circle_in_bounds(deposit.pos, deposit.radius, world_bounds):
+                continue
             if not self.is_world_explored(deposit.pos, deposit.radius):
                 continue
             deposit.harvest_enabled = self.resource_is_connected(deposit)
             render_jobs.append((*self._render_sort_key(deposit.pos, 18), lambda deposit=deposit: deposit.draw(surface, camera, viewport)))
 
         for dropped_item in self.dropped_items:
+            if not self._world_circle_in_bounds(dropped_item.pos, 18, world_bounds):
+                continue
             if self.is_world_explored(dropped_item.pos, 12):
                 render_jobs.append((*self._render_sort_key(dropped_item.pos, 19), lambda dropped_item=dropped_item: dropped_item.draw(surface, camera, viewport)))
 
         for zone in self.ability_zones:
+            if not self._world_circle_in_bounds(zone.pos, zone.radius, world_bounds):
+                continue
             if self.is_world_explored(zone.pos, zone.radius):
                 render_jobs.append((*self._render_sort_key(zone.pos, 20), lambda zone=zone: zone.draw(surface, camera, viewport)))
 
         for building in self.buildings:
+            if not self._world_circle_in_bounds(building.pos, BUILDING_SPRITE_WORLD_SIZE, world_bounds):
+                continue
             selected = (
                 building is self.selected_barracks
                 or building is self.selected_house
@@ -2722,6 +2749,8 @@ class GameState:
                 ),
             ))
         for tower in self.towers:
+            if not self._world_circle_in_bounds(tower.pos, BUILDING_SPRITE_WORLD_SIZE, world_bounds):
+                continue
             hovered = hover_kind == "structure" and hover_value == id(tower)
             render_jobs.append((
                 *self._render_sort_key(tower.pos, 33),
@@ -2735,18 +2764,28 @@ class GameState:
                 ),
             ))
         for troop in self.troops:
+            selected = troop in self.selected_troops
+            station_visible = selected and self._world_circle_in_bounds(
+                getattr(troop, "station", troop.pos),
+                getattr(troop, "effective_station_range", lambda: getattr(troop, "radius", self.grid.tile_size))(),
+                world_bounds,
+            )
+            if not station_visible and not self._world_circle_in_bounds(troop.pos, getattr(troop, "radius", self.grid.tile_size), world_bounds):
+                continue
             hovered = hover_kind == "troop" and hover_value == id(troop)
             render_jobs.append((
                 *self._render_sort_key(troop.pos, 42),
-                lambda troop=troop, hovered=hovered: self._draw_shadowed_unit(
+                lambda troop=troop, hovered=hovered, selected=selected: self._draw_shadowed_unit(
                     surface,
                     camera,
                     viewport,
                     troop,
-                    lambda: troop.draw(surface, camera, viewport, troop in self.selected_troops, hovered),
+                    lambda: troop.draw(surface, camera, viewport, selected, hovered),
                 ),
             ))
         for enemy in self.enemies:
+            if not self._world_circle_in_bounds(enemy.pos, getattr(enemy, "radius", self.grid.tile_size), world_bounds):
+                continue
             if self.is_world_explored(enemy.pos, enemy.radius):
                 if getattr(enemy, "target_class", "") == "enemy_structure":
                     render_jobs.append((
@@ -2772,21 +2811,35 @@ class GameState:
                         ),
                     ))
         for projectile in self.projectiles:
+            if not self._world_circle_in_bounds(projectile.pos, 18, world_bounds):
+                continue
             if self.is_world_explored(projectile.pos, 8):
                 render_jobs.append((*self._render_sort_key(projectile.pos, 60), lambda projectile=projectile: projectile.draw(surface, camera, viewport)))
         for projectile in self.enemy_projectiles:
+            if not self._world_circle_in_bounds(projectile.pos, 18, world_bounds):
+                continue
             if self.is_world_explored(projectile.pos, 8):
                 render_jobs.append((*self._render_sort_key(projectile.pos, 60), lambda projectile=projectile: projectile.draw(surface, camera, viewport)))
         for pulse in self.damage_pulses:
+            if not self._world_circle_in_bounds(pulse.pos, pulse.radius, world_bounds):
+                continue
             if self.is_world_explored(pulse.pos, pulse.radius):
                 render_jobs.append((*self._render_sort_key(pulse.pos, 70), lambda pulse=pulse: pulse.draw(surface, camera, viewport)))
         for beam in self.beams:
+            beam_radius = beam.start.distance_to(beam.end) * 0.5 + 12
+            beam_center = (beam.start + beam.end) * 0.5
+            if not self._world_circle_in_bounds(beam_center, beam_radius, world_bounds):
+                continue
             if self.is_world_explored(beam.start, 4) and self.is_world_explored(beam.end, 4):
                 render_jobs.append((*self._render_sort_key(beam.end, 71), lambda beam=beam: beam.draw(surface, camera, viewport)))
         for particle in self.particles:
+            if not self._world_circle_in_bounds(particle.pos, particle.radius, world_bounds):
+                continue
             if self.is_world_explored(particle.pos, particle.radius):
                 render_jobs.append((*self._render_sort_key(particle.pos, 72), lambda particle=particle: particle.draw(surface, camera, viewport)))
         for text in self.texts:
+            if not self._world_circle_in_bounds(text.pos, 24, world_bounds):
+                continue
             if self.is_world_explored(text.pos, 8):
                 render_jobs.append((*self._render_sort_key(text.pos, 80), lambda text=text: text.draw(surface, camera, viewport, fonts["tiny"])))
 
@@ -2797,6 +2850,33 @@ class GameState:
 
         surface.set_clip(previous_clip)
         pygame.draw.rect(surface, config.PALETTE.line_bright, original_viewport, 1)
+
+    def prewarm_render_cache(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        terrain_renderer = getattr(self, "_terrain_renderer", None)
+        frame_offsets = getattr(self, "_terrain_frame_offsets", None)
+        if terrain_renderer is not None and frame_offsets is not None:
+            terrain_renderer.prewarm(camera, viewport, self.grid, getattr(self, "_terrain_shadow_opacity", None), frame_offsets)
+
+    def _visible_world_bounds(self, camera, viewport: pygame.Rect, margin: float = 0.0) -> tuple[float, float, float, float]:
+        top_left = camera.screen_to_world(viewport.topleft, viewport)
+        bottom_right = camera.screen_to_world(viewport.bottomright, viewport)
+        return (
+            top_left.x - margin,
+            top_left.y - margin,
+            bottom_right.x + margin,
+            bottom_right.y + margin,
+        )
+
+    def _world_circle_in_bounds(
+        self,
+        pos: pygame.Vector2 | tuple[float, float],
+        radius: float,
+        bounds: tuple[float, float, float, float],
+    ) -> bool:
+        point = pygame.Vector2(pos)
+        left, top, right, bottom = bounds
+        radius = max(0.0, float(radius))
+        return point.x + radius >= left and point.x - radius <= right and point.y + radius >= top and point.y - radius <= bottom
 
     def _draw_map_boundary(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         top_left = camera.world_to_screen((0, 0), viewport)
@@ -2832,20 +2912,38 @@ class GameState:
         pos = getattr(actor, "pos", None)
         if pos is None:
             return
-        radius = max(4.0, float(getattr(actor, "radius", self.grid.tile_size * 0.4)))
+        sprite_size = self._unit_shadow_sprite_size(actor, camera)
         center = camera.world_to_screen(pos, viewport)
         rect = pygame.Rect(
             0,
             0,
-            max(7, int(round(radius * 1.75 * camera.zoom))),
-            max(4, int(round(radius * 0.58 * camera.zoom))),
+            max(10, int(round(sprite_size * 0.82))),
+            max(5, int(round(sprite_size * 0.24))),
         )
         rect.center = (
             int(round(center.x)),
-            int(round(center.y + radius * 0.58 * camera.zoom)),
+            int(round(center.y + sprite_size * 0.43)),
         )
         if rect.colliderect(viewport):
             draw_ellipse_alpha(surface, rect, config.PALETTE.black, config.ENTITY_SHADOW_ALPHA)
+
+    def _unit_shadow_sprite_size(self, actor, camera) -> float:
+        if actor in getattr(self, "troops", ()):
+            sheet = troop_sprite_sheet(getattr(actor, "kind", ""))
+            source_size = sheet.frame_size if sheet is not None else FRAME_SIZE
+            return max(1.0, float(source_size) * camera.zoom)
+
+        if getattr(actor, "attack_anim_phase", ""):
+            sheet = enemy_attack_sprite_sheet(getattr(actor, "kind", ""))
+            if sheet is not None:
+                return max(1.0, float(sheet.frame_size) * camera.zoom)
+
+        sheet = enemy_sprite_sheet(getattr(actor, "kind", ""))
+        if sheet is not None:
+            return max(1.0, float(sheet.frame_size) * camera.zoom)
+
+        radius = max(4.0, float(getattr(actor, "radius", config.TILE_SIZE * 0.4)))
+        return radius * 2.0 * camera.zoom
 
     def _draw_structure_shadow(
         self,
@@ -2861,19 +2959,21 @@ class GameState:
         pos = getattr(structure, "pos", None)
         if pos is None:
             return
+        fallback_size = getattr(getattr(self, "grid", None), "tile_size", config.TILE_SIZE)
         base_size = float(world_size) if world_size is not None else max(
-            self.grid.tile_size * 0.82,
-            float(getattr(structure, "radius", self.grid.tile_size * 0.5)) * 1.85,
+            fallback_size * 0.82,
+            float(getattr(structure, "radius", fallback_size * 0.5)) * 1.85,
         )
-        size = max(8, int(round(base_size * 0.84 * camera.zoom)))
+        size = max(12, int(round(base_size * 1.12 * camera.zoom)))
         center = camera.world_to_screen(pos, viewport)
         rect = pygame.Rect(0, 0, size, size)
         rect.center = (
             int(round(center.x)),
-            int(round(center.y + size * 0.06)),
+            int(round(center.y + size * 0.18)),
         )
         if rect.colliderect(viewport):
-            draw_rect_alpha(surface, rect, config.PALETTE.black, config.ENTITY_SHADOW_ALPHA)
+            feather = max(3, int(round(size * 0.16)))
+            draw_soft_rect_alpha(surface, rect, config.PALETTE.black, config.ENTITY_SHADOW_ALPHA, feather)
 
     def _structure_shadow_world_size(self, structure) -> float:
         kind = getattr(structure, "kind", "")
@@ -2882,47 +2982,62 @@ class GameState:
         return max(BUILDING_SPRITE_WORLD_SIZE, float(getattr(structure, "radius", self.grid.tile_size * 0.5)) * 1.85)
 
     def _draw_terrain(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        terrain_renderer = getattr(self, "_terrain_renderer", None)
+        frame_offsets = getattr(self, "_terrain_frame_offsets", None)
+        if terrain_renderer is not None and frame_offsets is not None:
+            if terrain_renderer.draw(surface, camera, viewport, self.grid, getattr(self, "_terrain_shadow_opacity", None), frame_offsets):
+                return
+
         x0, y0, x1, y1 = camera.visible_tile_bounds(viewport, self.grid.tile_size, self.grid.width, self.grid.height)
-        reference_elevation = self.terrain_shadows.reference_elevation(self.grid.terrain)
+        shadow_opacity_map = getattr(self, "_terrain_shadow_opacity", None)
+        frame_offsets = getattr(self, "_terrain_frame_offsets", None)
+        terrain_time = pygame.time.get_ticks() * 0.001
 
         for y in range(y0, y1):
             for x in range(x0, x1):
                 cell = (x, y)
                 terrain_cell = self.grid.terrain.cell(cell)
-                frame_index = terrain_sprite_frame(cell)
-                rect = draw_terrain_tile(surface, camera, viewport, cell, terrain_cell.tile_name, self.grid.tile_size, frame_index=frame_index)
+                frame_index = self._terrain_frame_index(frame_offsets, x, y, terrain_time)
+                shadow_opacity = shadow_opacity_map[x][y] if shadow_opacity_map is not None else self.terrain_shadows.opacity_for(self.grid.terrain, cell)
+                rect = draw_terrain_tile_shaded(surface, camera, viewport, cell, terrain_cell.tile_name, self.grid.tile_size, shadow_opacity, frame_index=frame_index)
                 if rect is None:
                     rect = self._cell_screen_rect(cell, camera, viewport)
                     shade = max(18, min(68, 28 + terrain_cell.elevation * 15))
                     pygame.draw.rect(surface, (shade, shade, shade), rect)
-                shadow_opacity = self.terrain_shadows.opacity_for(
-                    self.grid.terrain,
-                    cell,
-                    reference_elevation=reference_elevation,
-                )
-                if shadow_opacity > 0 and draw_terrain_shadow_overlay(
-                    surface,
-                    camera,
-                    viewport,
-                    cell,
-                    terrain_cell.tile_name,
-                    self.grid.tile_size,
-                    shadow_opacity,
-                    frame_index=frame_index,
-                ) is None:
-                    draw_rect_alpha(surface, rect, config.PALETTE.black, int(round(shadow_opacity * 255)))
+                    if shadow_opacity > 0:
+                        draw_rect_alpha(surface, rect, config.PALETTE.black, int(round(shadow_opacity * 255)))
 
         for y in range(y0, y1):
             for x in range(x0, x1):
                 terrain_cell = self.grid.terrain.cell((x, y))
                 if terrain_cell.cliff_tile_name is not None:
-                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.cliff_tile_name, self.grid.tile_size)
+                    frame_index = self._terrain_frame_index(frame_offsets, x, y, terrain_time)
+                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.cliff_tile_name, self.grid.tile_size, frame_index=frame_index)
 
         for y in range(y0, y1):
             for x in range(x0, x1):
                 terrain_cell = self.grid.terrain.cell((x, y))
                 if terrain_cell.feature_tile_name is not None:
-                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.feature_tile_name, self.grid.tile_size, phase_owner=(x, y))
+                    frame_index = self._terrain_frame_index(frame_offsets, x, y, terrain_time)
+                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.feature_tile_name, self.grid.tile_size, phase_owner=(x, y), frame_index=frame_index)
+
+    def _build_terrain_frame_offsets(self) -> list[list[int]]:
+        frame_count = max(1, TERRAIN_FRAME_COUNT)
+        frame_seconds = max(0.001, TERRAIN_FRAME_SECONDS)
+        cache: list[list[int]] = []
+        for x in range(self.grid.width):
+            column: list[int] = []
+            for y in range(self.grid.height):
+                phase = ((x * 37 + y * 19) % 97) / 17.0
+                mixed = (x * 73856093) ^ (y * 19349663) ^ ((x + y) * 83492791)
+                column.append((int(phase / frame_seconds) + abs(mixed)) % frame_count)
+            cache.append(column)
+        return cache
+
+    def _terrain_frame_index(self, frame_offsets, x: int, y: int, terrain_time: float) -> int:
+        if frame_offsets is None:
+            return 0
+        return (int(terrain_time / max(0.001, TERRAIN_FRAME_SECONDS)) + frame_offsets[x][y]) % max(1, TERRAIN_FRAME_COUNT)
 
     def _render_sort_key(self, pos: pygame.Vector2 | tuple[float, float], layer: int) -> tuple[int, float, float]:
         point = pygame.Vector2(pos)

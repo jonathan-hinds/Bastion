@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import pygame
+try:
+    import pygame.surfarray as surfarray
+except (ImportError, pygame.error):
+    surfarray = None
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "fog.json"
@@ -32,6 +40,7 @@ class FogSettings:
     visibility_threshold: float
     explored_threshold: float
     source_interval: float
+    surface_interval: float
     profiles: dict[str, VisionProfile]
 
     def profile(self, key: str, fallback: str = "structure") -> VisionProfile:
@@ -71,6 +80,7 @@ def load_fog_settings(path: Path | None = None) -> FogSettings:
         visibility_threshold=max(0.01, min(0.95, float(global_data.get("visibility_threshold", 0.18)))),
         explored_threshold=max(0.01, min(0.95, float(global_data.get("explored_threshold", 0.16)))),
         source_interval=max(0.0, float(global_data.get("source_interval", 0.08))),
+        surface_interval=max(0.0, float(global_data.get("surface_interval", 1.0 / 30.0))),
         profiles=profiles,
     )
 
@@ -85,32 +95,51 @@ class FogOfWar:
         self.width = grid.width
         self.height = grid.height
         self.enabled = settings.enabled
-        self.visible = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
-        self.explored = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
-        self._target = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
+        if np is not None:
+            self.visible = np.zeros((self.width, self.height), dtype=np.float32)
+            self.explored = np.zeros((self.width, self.height), dtype=np.float32)
+            self._target = np.zeros((self.width, self.height), dtype=np.float32)
+        else:
+            self.visible = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
+            self.explored = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
+            self._target = [[0.0 for _ in range(self.height)] for _ in range(self.width)]
         self._surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         self._source_timer = 0.0
         self._cached_sources: list[VisionSource] = []
+        self._target_dirty = True
+        self._surface_dirty = True
+        self._surface_revision = 0
+        self._next_surface_refresh = 0.0
+        self._scaled_cache_key: tuple | None = None
+        self._scaled_cache: pygame.Surface | None = None
 
     def update(self, dt: float, sources: Iterable[VisionSource], immediate: bool = False) -> None:
         if not self.enabled:
             return
         if immediate:
-            self._cached_sources = list(sources)
+            self._cached_sources = self._snapshot_sources(sources)
             self._source_timer = 0.0
+            self._target_dirty = True
         else:
             self._source_timer -= dt
             if self._source_timer <= 0.0:
-                self._cached_sources = list(sources)
+                self._cached_sources = self._snapshot_sources(sources)
                 self._source_timer = self.settings.source_interval
+                self._target_dirty = True
 
-        self._clear_target()
-        for source in self._cached_sources:
-            self._paint_source(source)
+        if self._target_dirty:
+            self._clear_target()
+            for source in self._cached_sources:
+                self._paint_source(source)
+            self._target_dirty = False
         self._blend_visibility(dt, immediate)
+        self._surface_dirty = True
 
     def reveal_now(self, sources: Iterable[VisionSource]) -> None:
         self.update(0.0, sources, immediate=True)
+
+    def _snapshot_sources(self, sources: Iterable[VisionSource]) -> list[VisionSource]:
+        return [VisionSource(pygame.Vector2(source.pos), source.profile) for source in sources]
 
     def profile(self, key: str, fallback: str = "structure") -> VisionProfile:
         return self.settings.profile(key, fallback)
@@ -146,7 +175,7 @@ class FogOfWar:
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         if not self.enabled:
             return
-        self._refresh_surface()
+        self._refresh_surface_if_due()
 
         world_left = max(0.0, camera.screen_to_world(viewport.topleft, viewport).x)
         world_top = max(0.0, camera.screen_to_world(viewport.topleft, viewport).y)
@@ -174,11 +203,20 @@ class FogOfWar:
             max(1, math.ceil(screen_end.x - screen_start.x)),
             max(1, math.ceil(screen_end.y - screen_start.y)),
         )
-        fog_view = self._surface.subsurface(source_rect)
-        scaled = pygame.transform.smoothscale(fog_view, target_rect.size)
+        cache_key = (source_rect.x, source_rect.y, source_rect.width, source_rect.height, target_rect.width, target_rect.height, self._surface_revision)
+        if cache_key == self._scaled_cache_key and self._scaled_cache is not None:
+            scaled = self._scaled_cache
+        else:
+            fog_view = self._surface.subsurface(source_rect)
+            scaled = pygame.transform.smoothscale(fog_view, target_rect.size)
+            self._scaled_cache_key = cache_key
+            self._scaled_cache = scaled
         surface.blit(scaled, target_rect.topleft)
 
     def _clear_target(self) -> None:
+        if np is not None and hasattr(self._target, "fill"):
+            self._target.fill(0.0)
+            return
         for x in range(self.width):
             column = self._target[x]
             for y in range(self.height):
@@ -216,6 +254,19 @@ class FogOfWar:
     def _blend_visibility(self, dt: float, immediate: bool) -> None:
         reveal_step = 1.0 if immediate else self.settings.reveal_speed * dt
         hide_step = 1.0 if immediate else self.settings.hide_speed * dt
+        if np is not None and hasattr(self.visible, "shape"):
+            target = self._target
+            visible = self.visible
+            if immediate:
+                visible[:, :] = target
+            else:
+                visible[:, :] = np.where(
+                    target >= visible,
+                    np.minimum(target, visible + reveal_step),
+                    np.maximum(target, visible - hide_step),
+                )
+            np.maximum(self.explored, visible, out=self.explored)
+            return
         for x in range(self.width):
             visible_column = self.visible[x]
             explored_column = self.explored[x]
@@ -231,7 +282,33 @@ class FogOfWar:
                 if current > explored_column[y]:
                     explored_column[y] = current
 
+    def _refresh_surface_if_due(self) -> None:
+        if not self._surface_dirty:
+            return
+        now = pygame.time.get_ticks() * 0.001
+        if self._surface_revision > 0 and now < self._next_surface_refresh:
+            return
+        self._refresh_surface()
+        self._surface_dirty = False
+        self._surface_revision += 1
+        self._scaled_cache_key = None
+        self._scaled_cache = None
+        self._next_surface_refresh = now + self.settings.surface_interval
+
     def _refresh_surface(self) -> None:
+        if surfarray is not None and np is not None:
+            try:
+                alpha_pixels = surfarray.pixels_alpha(self._surface)
+            except (pygame.error, ValueError):
+                alpha_pixels = None
+            if alpha_pixels is not None:
+                try:
+                    explored = np.asarray(self.explored, dtype=np.float32)
+                    alpha_pixels[:, :] = (255 * (1.0 - np.clip(explored, 0.0, 1.0))).astype(np.uint8)
+                    return
+                finally:
+                    del alpha_pixels
+
         self._surface.lock()
         try:
             for x in range(self.width):

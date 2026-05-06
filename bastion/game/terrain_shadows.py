@@ -27,6 +27,16 @@ class TerrainShadowCalculator:
     def __init__(self, settings: TerrainShadowSettings | None = None) -> None:
         self.settings = settings or TerrainShadowSettings()
 
+    def opacity_map(self, terrain) -> list[list[float]]:
+        reference = self.reference_elevation(terrain)
+        return [
+            [
+                self.opacity_for(terrain, (x, y), reference_elevation=reference)
+                for y in range(terrain.height)
+            ]
+            for x in range(terrain.width)
+        ]
+
     def reference_elevation(self, terrain) -> int:
         max_elevation = getattr(terrain, "max_elevation", None)
         if callable(max_elevation):

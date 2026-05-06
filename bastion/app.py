@@ -13,6 +13,7 @@ from bastion.engine.audio import AudioSystem
 from bastion.engine.drawing import draw_rect_alpha
 from bastion.engine import hover_feedback
 from bastion.engine.camera import Camera
+from bastion.engine.sprites import preload_sprite_assets
 from bastion.game.state import GameState
 from bastion.ui.hud import HUD
 from bastion.ui.pause_menu import PauseMenu
@@ -29,6 +30,7 @@ class BastionApp:
         self.clock = pygame.time.Clock()
         self.audio = AudioSystem()
         self.audio.play_music()
+        preload_sprite_assets()
         self.state = GameState()
         self.state.audio = self.audio
         self.camera = Camera(self.state.grid.world_size)
@@ -56,6 +58,7 @@ class BastionApp:
         self.restore_position: tuple[int, int] | None = None
         self.running = True
         self.camera.center_on(self.state.grid.world_center(self.state.grid.townhall_cell), self.viewport)
+        self.state.prewarm_render_cache(self.screen, self.camera, self.viewport)
 
     @property
     def screen_rect(self) -> pygame.Rect:

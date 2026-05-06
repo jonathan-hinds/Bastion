@@ -141,6 +141,7 @@ class TerrainSpriteAtlas:
         self._tile_cache: dict[tuple[str, int], pygame.Surface] = {}
         self._scaled_cache: dict[tuple[str, int, int, int], pygame.Surface] = {}
         self._shadow_cache: dict[tuple[str, int, int, int, int], pygame.Surface] = {}
+        self._shaded_cache: dict[tuple[str, int, int, int, int], pygame.Surface] = {}
 
     @property
     def frame_count(self) -> int:
@@ -190,6 +191,27 @@ class TerrainSpriteAtlas:
         self._shadow_cache[cache_key] = shadow
         return shadow
 
+    def shaded_frame(self, tile_name: str, frame_index: int, size: tuple[int, int], alpha: int) -> pygame.Surface | None:
+        alpha = max(0, min(255, int(alpha)))
+        image = self.frame(tile_name, frame_index, size)
+        if image is None or alpha <= 0:
+            return image
+        width, height = max(1, int(size[0])), max(1, int(size[1]))
+        cache_key = (tile_name, int(frame_index) % max(1, len(self.sheets)), width, height, alpha)
+        cached = self._shaded_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        shadow = self.shadow_frame(tile_name, frame_index, (width, height), alpha)
+        if shadow is None:
+            return image
+        shaded = image.copy()
+        shaded.blit(shadow, (0, 0))
+        if len(self._shaded_cache) > 4096:
+            self._shaded_cache.clear()
+        self._shaded_cache[cache_key] = shaded
+        return shaded
+
 
 _building_sequence_cache: dict[tuple[str, str | None], SpriteFrameSequence | None] = {}
 _tower_head_sequence_cache: dict[str, SpriteFrameSequence | None] = {}
@@ -237,13 +259,16 @@ def terrain_sprite_atlas() -> TerrainSpriteAtlas | None:
 
 def _terrain_tile_screen_rect(camera, viewport: pygame.Rect, cell: tuple[int, int], tile_size: int) -> pygame.Rect:
     x, y = cell
-    top_left = camera.world_to_screen((x * tile_size, y * tile_size), viewport)
-    bottom_right = camera.world_to_screen(((x + 1) * tile_size, (y + 1) * tile_size), viewport)
+    zoom = camera.zoom
+    left = viewport.x + (x * tile_size - camera.offset.x) * zoom
+    top = viewport.y + (y * tile_size - camera.offset.y) * zoom
+    right = viewport.x + ((x + 1) * tile_size - camera.offset.x) * zoom
+    bottom = viewport.y + ((y + 1) * tile_size - camera.offset.y) * zoom
     return pygame.Rect(
-        math.floor(top_left.x),
-        math.floor(top_left.y),
-        max(1, math.ceil(bottom_right.x) - math.floor(top_left.x)),
-        max(1, math.ceil(bottom_right.y) - math.floor(top_left.y)),
+        math.floor(left),
+        math.floor(top),
+        max(1, math.ceil(right) - math.floor(left)),
+        max(1, math.ceil(bottom) - math.floor(top)),
     )
 
 
@@ -307,6 +332,36 @@ def draw_terrain_shadow_overlay(
     owner = cell if phase_owner is None else phase_owner
     frame_index = terrain_sprite_frame(owner, atlas.frame_count) if frame_index is None else int(frame_index)
     image = atlas.shadow_frame(tile_name, frame_index, rect.size, int(round(opacity * 255)))
+    if image is None:
+        return None
+    surface.blit(image, rect)
+    return rect
+
+
+def draw_terrain_tile_shaded(
+    surface: pygame.Surface,
+    camera,
+    viewport: pygame.Rect,
+    cell: tuple[int, int],
+    tile_name: str,
+    tile_size: int,
+    opacity: float,
+    *,
+    phase_owner=None,
+    frame_index: int | None = None,
+) -> pygame.Rect | None:
+    atlas = terrain_sprite_atlas()
+    if atlas is None:
+        return None
+
+    rect = _terrain_tile_screen_rect(camera, viewport, cell, tile_size)
+    if not rect.colliderect(viewport):
+        return rect
+
+    owner = cell if phase_owner is None else phase_owner
+    frame_index = terrain_sprite_frame(owner, atlas.frame_count) if frame_index is None else int(frame_index)
+    alpha = int(round(max(0.0, min(1.0, float(opacity))) * 255))
+    image = atlas.shaded_frame(tile_name, frame_index, rect.size, alpha)
     if image is None:
         return None
     surface.blit(image, rect)
@@ -661,6 +716,23 @@ def enemy_attack_sprite_sheet(kind: str) -> TroopSpriteSheet | None:
                 except (OSError, pygame.error, ValueError):
                     _enemy_attack_sprite_cache[kind] = None
     return _enemy_attack_sprite_cache[kind]
+
+
+def preload_sprite_assets() -> None:
+    terrain_sprite_atlas()
+    for kind in BUILDING_SPRITE_SLUGS:
+        building_sprite_sequence(kind)
+    for variant in ("gold", "mineral"):
+        building_sprite_sequence("extractor", variant)
+    tower_base_sprite_sequence()
+    for kind in TOWER_HEAD_SLUGS:
+        tower_head_sprite_sequence(kind)
+    for kind in TROOP_SPRITE_FILES:
+        troop_sprite_sheet(kind)
+    for kind in ENEMY_SPRITE_FILES:
+        enemy_sprite_sheet(kind)
+    for kind in ENEMY_ATTACK_SPRITE_FILES:
+        enemy_attack_sprite_sheet(kind)
 
 
 def directional_row(vector: pygame.Vector2) -> tuple[int, bool]:

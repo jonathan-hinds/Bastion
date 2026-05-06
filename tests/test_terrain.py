@@ -133,10 +133,23 @@ class TerrainGenerationTests(unittest.TestCase):
         blocked = GameGrid(5, 5, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations))
         stair = GameGrid(5, 5, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations, {(2, 3): STAIR_SOUTH}))
         lower_apron = stair.world_center((2, 3)) + (-10, -12)
-        upper_apron = stair.world_center((1, 2)) + (10, 10)
+        upper_apron = stair.world_center((2, 2)) + (-10, 14)
 
         self.assertFalse(blocked.line_clear(lower_apron, upper_apron, 12))
         self.assertTrue(stair.line_clear(lower_apron, upper_apron, 12))
+
+    def test_stair_overlap_does_not_turn_adjacent_cliffs_into_stairs(self):
+        elevations = [[0 for _ in range(5)] for _ in range(5)]
+        for x in range(1, 4):
+            elevations[x][2] = 1
+
+        grid = GameGrid(5, 5, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations, {(2, 3): STAIR_SOUTH}))
+        lower_cliff_side = grid.world_center((1, 3)) + (10, -12)
+        upper_cliff_side = grid.world_center((1, 2)) + (10, 14)
+
+        self.assertTrue(grid.circle_clear(lower_cliff_side, 12))
+        self.assertTrue(grid.circle_clear(upper_cliff_side, 12))
+        self.assertFalse(grid.line_clear(lower_cliff_side, upper_cliff_side, 12))
 
     def test_procedural_terrain_has_elevation_stairs_and_reachable_spawns(self):
         random.seed(11)
