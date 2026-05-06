@@ -7,6 +7,7 @@ from pathlib import Path
 import pygame
 
 from bastion.engine.drawing import draw_circle_alpha
+from bastion.terrain_tiles import terrain_tile_rects
 
 
 FRAME_SIZE = 32
@@ -63,6 +64,7 @@ ENEMY_SPRITE_DIR = asset_root() / "Sprites" / "Enemies" / "Sprites"
 BOSS_SPRITE_DIR = asset_root() / "Sprites" / "Enemies" / "Bosses"
 BUILDING_SPRITE_DIR = asset_root() / "Sprites" / "Buildings"
 TOWER_SPRITE_DIR = BUILDING_SPRITE_DIR / "Towers"
+TERRAIN_SPRITE_DIR = asset_root() / "Sprites"
 
 BUILDING_FRAME_COUNT = 5
 BUILDING_FRAME_SIZE = 64
@@ -70,6 +72,9 @@ CORE_BUILDING_FRAME_SIZE = 96
 BUILDING_FRAME_SECONDS = 0.16
 UTILITY_PULSE_SECONDS = 1.05
 UTILITY_BOUNCE_SECONDS = 1.85
+TERRAIN_FRAME_COUNT = 5
+TERRAIN_FRAME_SIZE = 32
+TERRAIN_FRAME_SECONDS = BUILDING_FRAME_SECONDS
 
 BUILDING_SPRITE_SLUGS = {
     "barracks": "barracks",
@@ -129,9 +134,67 @@ class SpriteFrameSequence:
         return scaled
 
 
+class TerrainSpriteAtlas:
+    def __init__(self, sheet_paths: tuple[Path, ...], tile_rects: dict[str, pygame.Rect]) -> None:
+        self.tile_rects = dict(tile_rects)
+        self.sheets = tuple(_load_tilesheet(path) for path in sheet_paths)
+        self._tile_cache: dict[tuple[str, int], pygame.Surface] = {}
+        self._scaled_cache: dict[tuple[str, int, int, int], pygame.Surface] = {}
+        self._shadow_cache: dict[tuple[str, int, int, int, int], pygame.Surface] = {}
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.sheets)
+
+    def frame(self, tile_name: str, frame_index: int, size: tuple[int, int]) -> pygame.Surface | None:
+        rect = self.tile_rects.get(tile_name)
+        if rect is None or not self.sheets:
+            return None
+
+        frame_index = int(frame_index) % len(self.sheets)
+        width, height = max(1, int(size[0])), max(1, int(size[1]))
+        cache_key = (tile_name, frame_index, width, height)
+        cached = self._scaled_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        raw_key = (tile_name, frame_index)
+        raw = self._tile_cache.get(raw_key)
+        if raw is None:
+            raw = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            raw.blit(self.sheets[frame_index], (0, 0), rect)
+            self._tile_cache[raw_key] = raw
+
+        scaled = raw if raw.get_size() == (width, height) else pygame.transform.scale(raw, (width, height))
+        self._scaled_cache[cache_key] = scaled
+        return scaled
+
+    def shadow_frame(self, tile_name: str, frame_index: int, size: tuple[int, int], alpha: int) -> pygame.Surface | None:
+        if not self.sheets:
+            return None
+        alpha = max(0, min(255, int(alpha)))
+        if alpha <= 0:
+            return None
+        frame_index = int(frame_index) % len(self.sheets)
+        width, height = max(1, int(size[0])), max(1, int(size[1]))
+        cache_key = (tile_name, frame_index, width, height, alpha)
+        cached = self._shadow_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        image = self.frame(tile_name, frame_index, (width, height))
+        if image is None:
+            return None
+        shadow = image.copy()
+        shadow.fill((0, 0, 0, alpha), special_flags=pygame.BLEND_RGBA_MULT)
+        self._shadow_cache[cache_key] = shadow
+        return shadow
+
+
 _building_sequence_cache: dict[tuple[str, str | None], SpriteFrameSequence | None] = {}
 _tower_head_sequence_cache: dict[str, SpriteFrameSequence | None] = {}
 _tower_base_sequence_cache: SpriteFrameSequence | None | bool = False
+_terrain_atlas_cache: TerrainSpriteAtlas | None | bool = False
 
 
 def building_sprite_sequence(kind: str, variant: str | None = None) -> SpriteFrameSequence | None:
@@ -155,6 +218,99 @@ def tower_base_sprite_sequence() -> SpriteFrameSequence | None:
     if _tower_base_sequence_cache is False:
         _tower_base_sequence_cache = _load_sprite_sequence(TOWER_SPRITE_DIR, "base", BUILDING_FRAME_SIZE)
     return _tower_base_sequence_cache if isinstance(_tower_base_sequence_cache, SpriteFrameSequence) else None
+
+
+def terrain_sprite_atlas() -> TerrainSpriteAtlas | None:
+    global _terrain_atlas_cache
+    if _terrain_atlas_cache is False:
+        paths = tuple(TERRAIN_SPRITE_DIR / f"tilesheet{index}.png" for index in range(1, TERRAIN_FRAME_COUNT + 1))
+        if not all(path.exists() for path in paths):
+            _terrain_atlas_cache = None
+        else:
+            try:
+                rects = {name: pygame.Rect(rect) for name, rect in terrain_tile_rects().items()}
+                _terrain_atlas_cache = TerrainSpriteAtlas(paths, rects)
+            except (OSError, pygame.error, ValueError):
+                _terrain_atlas_cache = None
+    return _terrain_atlas_cache if isinstance(_terrain_atlas_cache, TerrainSpriteAtlas) else None
+
+
+def _terrain_tile_screen_rect(camera, viewport: pygame.Rect, cell: tuple[int, int], tile_size: int) -> pygame.Rect:
+    x, y = cell
+    top_left = camera.world_to_screen((x * tile_size, y * tile_size), viewport)
+    bottom_right = camera.world_to_screen(((x + 1) * tile_size, (y + 1) * tile_size), viewport)
+    return pygame.Rect(
+        math.floor(top_left.x),
+        math.floor(top_left.y),
+        max(1, math.ceil(bottom_right.x) - math.floor(top_left.x)),
+        max(1, math.ceil(bottom_right.y) - math.floor(top_left.y)),
+    )
+
+
+def terrain_sprite_frame(owner, frame_count: int = TERRAIN_FRAME_COUNT, frame_seconds: float = TERRAIN_FRAME_SECONDS) -> int:
+    frame_count = max(1, int(frame_count))
+    return (animated_sprite_frame(owner, frame_count, frame_seconds) + _owner_frame_offset(owner, frame_count)) % frame_count
+
+
+def draw_terrain_tile(
+    surface: pygame.Surface,
+    camera,
+    viewport: pygame.Rect,
+    cell: tuple[int, int],
+    tile_name: str,
+    tile_size: int,
+    *,
+    phase_owner=None,
+    frame_index: int | None = None,
+) -> pygame.Rect | None:
+    atlas = terrain_sprite_atlas()
+    if atlas is None:
+        return None
+
+    rect = _terrain_tile_screen_rect(camera, viewport, cell, tile_size)
+    if not rect.colliderect(viewport):
+        return rect
+
+    owner = cell if phase_owner is None else phase_owner
+    frame_index = terrain_sprite_frame(owner, atlas.frame_count) if frame_index is None else int(frame_index)
+    image = atlas.frame(tile_name, frame_index, rect.size)
+    if image is None:
+        return None
+    surface.blit(image, rect)
+    return rect
+
+
+def draw_terrain_shadow_overlay(
+    surface: pygame.Surface,
+    camera,
+    viewport: pygame.Rect,
+    cell: tuple[int, int],
+    tile_name: str,
+    tile_size: int,
+    opacity: float,
+    *,
+    phase_owner=None,
+    frame_index: int | None = None,
+) -> pygame.Rect | None:
+    opacity = max(0.0, min(1.0, float(opacity)))
+    if opacity <= 0:
+        return None
+
+    atlas = terrain_sprite_atlas()
+    if atlas is None:
+        return None
+
+    rect = _terrain_tile_screen_rect(camera, viewport, cell, tile_size)
+    if not rect.colliderect(viewport):
+        return rect
+
+    owner = cell if phase_owner is None else phase_owner
+    frame_index = terrain_sprite_frame(owner, atlas.frame_count) if frame_index is None else int(frame_index)
+    image = atlas.shadow_frame(tile_name, frame_index, rect.size, int(round(opacity * 255)))
+    if image is None:
+        return None
+    surface.blit(image, rect)
+    return rect
 
 
 def draw_building_sprite(
@@ -277,6 +433,27 @@ def animated_sprite_frame(owner, frame_count: int = BUILDING_FRAME_COUNT, frame_
     return int(seconds / frame_seconds) % frame_count
 
 
+def _owner_frame_offset(owner, frame_count: int) -> int:
+    frame_count = max(1, int(frame_count))
+    if frame_count <= 1:
+        return 0
+    if isinstance(owner, tuple) and len(owner) == 2:
+        return _cell_frame_offset(owner, frame_count)
+    cell = getattr(owner, "cell", None)
+    if isinstance(cell, tuple) and len(cell) == 2:
+        return _cell_frame_offset(cell, frame_count)
+    index = getattr(owner, "index", None)
+    if isinstance(index, int):
+        return abs(index * 1103515245 + 12345) % frame_count
+    return int(abs(_owner_phase(owner)) / max(0.001, TERRAIN_FRAME_SECONDS)) % frame_count
+
+
+def _cell_frame_offset(cell: tuple[int, int], frame_count: int) -> int:
+    x, y = int(cell[0]), int(cell[1])
+    mixed = (x * 73856093) ^ (y * 19349663) ^ ((x + y) * 83492791)
+    return abs(mixed) % frame_count
+
+
 def _building_slug(kind: str, variant: str | None = None) -> str | None:
     if kind in {"extractor", "enemy_extractor"} and variant in {"gold", "mineral"}:
         return f"extractor-{variant}"
@@ -298,6 +475,14 @@ def _load_sprite_sequence(directory: Path, slug: str, frame_size: int) -> Sprite
         except (OSError, pygame.error, ValueError):
             return None
     return None
+
+
+def _load_tilesheet(path: Path) -> pygame.Surface:
+    image = pygame.image.load(str(path))
+    try:
+        return image.convert_alpha()
+    except pygame.error:
+        return image.copy()
 
 
 def _load_image_frame(path: Path, frame_size: int) -> pygame.Surface:

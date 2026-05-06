@@ -11,10 +11,9 @@
     "spacing": 0,
     "indexing": "0-based index = row * 3 + col. x = col * 32. y = row * 32.",
     "notes": [
-      "This index is based on the actual visual order of the provided spritesheet, not the earlier written list.",
       "The first 9 tiles are arranged visually as a 3x3 block: outer top-left, top, outer top-right, left, center, right, outer bottom-left, bottom, outer bottom-right.",
       "Tile 13 and tile 22 are intentionally empty/non-walkable cutout centers.",
-      "Tile 35 is unused/empty."
+      "Tile 35 stiars for going up and down elevation levels."
     ],
     "tiles": [
       {
@@ -483,7 +482,7 @@
         "h": 32,
         "name": "unused_empty_slot",
         "group": "unused",
-        "useCase": "Unused empty/black 32x32 slot."
+        "useCase": "stiars for going up and down elevation levels."
       }
     ]
   }

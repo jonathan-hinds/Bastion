@@ -47,3 +47,15 @@ def draw_rect_alpha(
     temp = pygame.Surface(rect.size, pygame.SRCALPHA)
     pygame.draw.rect(temp, (*color, max(0, min(255, alpha))), temp.get_rect(), width)
     surface.blit(temp, rect.topleft)
+
+
+def draw_ellipse_alpha(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    color: tuple[int, int, int],
+    alpha: int,
+    width: int = 0,
+) -> None:
+    temp = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.ellipse(temp, (*color, max(0, min(255, alpha))), temp.get_rect(), width)
+    surface.blit(temp, rect.topleft)

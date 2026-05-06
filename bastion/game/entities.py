@@ -517,10 +517,15 @@ class Enemy:
         self._move_to(self.pos + desired.normalize() * config.TILE_SIZE * 3, dt, game)
 
     def _apply_velocity(self, dt: float, game) -> None:
+        previous = pygame.Vector2(self.pos)
         self.pos += self.vel * dt
-        self.pos, collided = game.grid.resolve_circle_blockers(self.pos, self.collision_radius)
+        self.pos, collided = game.grid.resolve_circle_blockers(self.pos, self.collision_radius, previous)
         if collided:
-            self.vel *= 0.35
+            actual_delta = self.pos - previous
+            if dt > 0 and actual_delta.length_squared() > 0:
+                self.vel = actual_delta / dt
+            else:
+                self.vel.update(0, 0)
 
     def _decelerate(self, dt: float) -> None:
         if self.vel.length_squared() == 0:

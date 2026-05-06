@@ -1483,7 +1483,7 @@ class Troop:
             self.support_pulse = max(self.support_pulse, 0.18)
 
     def set_station(self, station: pygame.Vector2, grid) -> None:
-        self.station = grid.nearest_clear_world(pygame.Vector2(station), self.radius, max_radius=10)
+        self.station = grid.nearest_clear_world(pygame.Vector2(station), grid.navigation_radius(self.radius), max_radius=10)
         self.target = None
         self.navigator.clear()
 
@@ -1556,10 +1556,15 @@ class Troop:
         self._finish_movement(dt, game)
 
     def _finish_movement(self, dt: float, game) -> None:
+        previous = pygame.Vector2(self.pos)
         self.pos += self.vel * dt
-        self.pos, collided = game.grid.resolve_circle_blockers(self.pos, self.radius)
+        self.pos, collided = game.grid.resolve_circle_blockers(self.pos, self.radius, previous)
         if collided:
-            self.vel *= 0.35
+            actual_delta = self.pos - previous
+            if dt > 0 and actual_delta.length_squared() > 0:
+                self.vel = actual_delta / dt
+            else:
+                self.vel.update(0, 0)
         self._update_sprite_animation(dt)
 
     def _choose_target(self, game):

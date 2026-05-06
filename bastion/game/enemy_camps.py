@@ -612,7 +612,6 @@ class EnemyBaseCamp:
             return False
         self.active = True
         self.center = pygame.Vector2(core.pos)
-        self._assign_existing_worker(game)
         self._try_build_tower(game, self.center)
         game.spawn_burst(core.pos, 18, 76)
         return True

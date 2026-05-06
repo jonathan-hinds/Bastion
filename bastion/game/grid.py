@@ -8,12 +8,23 @@ import random
 import pygame
 
 from bastion import config
+from bastion.game.terrain import STAIR_SOUTH, ProceduralTerrainGenerator, TerrainMap
 
 
 class GameGrid:
     wall_max_health = 90.0
+    nav_padding = 4.0
 
-    def __init__(self, width: int = config.MAP_WIDTH, height: int = config.MAP_HEIGHT, tile_size: int = config.TILE_SIZE) -> None:
+    def __init__(
+        self,
+        width: int = config.MAP_WIDTH,
+        height: int = config.MAP_HEIGHT,
+        tile_size: int = config.TILE_SIZE,
+        *,
+        terrain: TerrainMap | None = None,
+        terrain_seed: int | None = None,
+        procedural_terrain: bool = True,
+    ) -> None:
         self.width = width
         self.height = height
         self.tile_size = tile_size
@@ -21,6 +32,12 @@ class GameGrid:
         self.wall_health: dict[tuple[int, int], float] = {}
         self.towers: dict[tuple[int, int], object] = {}
         self.townhall_cell = (width // 2, height // 2)
+        if terrain is not None:
+            self.terrain = terrain
+        elif procedural_terrain:
+            self.terrain = ProceduralTerrainGenerator().generate(width, height, self.townhall_cell, seed=terrain_seed)
+        else:
+            self.terrain = TerrainMap.flat(width, height)
         self.distances: list[list[int | None]] = [[None for _ in range(height)] for _ in range(width)]
         self.flow_vectors: list[list[pygame.Vector2]] = [[pygame.Vector2(0, 0) for _ in range(height)] for _ in range(width)]
         self.flow_targets: list[list[pygame.Vector2 | None]] = [[None for _ in range(height)] for _ in range(width)]
@@ -47,6 +64,9 @@ class GameGrid:
             yield (self.width - 1, y)
 
     def random_spawn_cell(self) -> tuple[int, int]:
+        reachable = [cell for cell in self.spawn_cells if self.passable(cell) and self.distance_at(cell) is not None]
+        if reachable:
+            return random.choice(reachable)
         edge = random.randrange(4)
         if edge == 0:
             return random.randrange(self.width), 0
@@ -73,11 +93,12 @@ class GameGrid:
         return cell in self.walls or cell in self.towers
 
     def passable(self, cell: tuple[int, int]) -> bool:
-        return self.in_bounds(cell) and not self.blocked(cell)
+        return self.in_bounds(cell) and self.terrain.is_walkable(cell) and not self.blocked(cell)
 
     def buildable(self, cell: tuple[int, int]) -> bool:
         return (
             self.in_bounds(cell)
+            and self.terrain.is_buildable(cell)
             and not self.is_outer_ring(cell)
             and not self.is_townhall_reserve(cell)
             and cell not in self.walls
@@ -104,12 +125,9 @@ class GameGrid:
         queue.append(start)
         while queue:
             cell = queue.popleft()
-            x, y = cell
-            current = self.distances[x][y]
-            for neighbor in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            current = self.distances[cell[0]][cell[1]]
+            for neighbor in self._cardinal_navigation_neighbors(cell):
                 nx, ny = neighbor
-                if not self.passable(neighbor):
-                    continue
                 if self.distances[nx][ny] is not None:
                     continue
                 self.distances[nx][ny] = int(current or 0) + 1
@@ -207,11 +225,19 @@ class GameGrid:
         point = pygame.Vector2(world)
         if self.circle_clear(point, radius):
             return point
+        sampled = self._nearest_clear_point(point, radius, max_distance=max_radius * self.tile_size)
+        if sampled is not None:
+            return sampled
         cell = self.nearest_passable_cell(self.cell_from_world(point), radius, max_radius)
         if cell is None:
-            resolved, _ = self.resolve_circle_blockers(point, radius)
-            return resolved
+            return self.world_center(self.townhall_cell)
         return self.world_center(cell)
+
+    def navigation_radius(self, radius: float) -> float:
+        """Radius used for planning, inflated slightly like an agent navmesh."""
+        if radius <= 0:
+            return 0.0
+        return min(self.tile_size * 0.46, float(radius) + min(self.nav_padding, self.tile_size * 0.125))
 
     def find_path(
         self,
@@ -305,6 +331,8 @@ class GameGrid:
             return self.circle_clear(a, radius)
         if not self.circle_clear(a, radius) or not self.circle_clear(b, radius):
             return False
+        if not self._terrain_line_clear(a, b, radius):
+            return False
 
         min_x = int((min(a.x, b.x) - radius) // self.tile_size)
         max_x = int((max(a.x, b.x) + radius) // self.tile_size)
@@ -373,7 +401,9 @@ class GameGrid:
                     continue
                 neighbor = (cx + dx, cy + dy)
                 distance = self.distance_at(neighbor)
-                if distance is None or not self._can_step_diagonal(cell, dx, dy):
+                if distance is None:
+                    continue
+                if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy):
                     continue
                 if current is None:
                     weight = 1.0 / max(1.0, float(distance))
@@ -426,9 +456,28 @@ class GameGrid:
 
         return push.normalize() if push.length_squared() > 0 else push
 
-    def resolve_circle_blockers(self, world: pygame.Vector2, radius: float) -> tuple[pygame.Vector2, bool]:
+    def resolve_circle_blockers(
+        self,
+        world: pygame.Vector2,
+        radius: float,
+        previous_world: pygame.Vector2 | tuple[float, float] | None = None,
+    ) -> tuple[pygame.Vector2, bool]:
         point = pygame.Vector2(world)
         collided = False
+        if previous_world is not None:
+            previous = pygame.Vector2(previous_world)
+            if not self.circle_clear(previous, radius):
+                recovered = self._nearest_clear_point(previous, radius, max_distance=self.tile_size * 3.0)
+                if recovered is None:
+                    recovered = self.nearest_clear_world(previous, radius)
+                previous = recovered
+                collided = True
+            if self.line_clear(previous, point, radius):
+                return self._clamp_world(point, radius), collided
+            slid = self._slide_circle(previous, point, radius)
+            return self._clamp_world(slid, radius), True
+        if self.circle_clear(point, radius):
+            return self._clamp_world(point, radius), False
         min_x = int((point.x - radius) // self.tile_size)
         max_x = int((point.x + radius) // self.tile_size)
         min_y = int((point.y - radius) // self.tile_size)
@@ -455,11 +504,108 @@ class GameGrid:
                     point += delta.normalize() * overlap
                     collided = True
 
+        if not self.circle_clear(point, radius):
+            recovered = self._nearest_clear_point(point, radius, max_distance=self.tile_size * 3.0)
+            if recovered is not None:
+                point = recovered
+                collided = True
+
+        return self._clamp_world(point, radius), collided
+
+    def _slide_circle(self, start: pygame.Vector2, end: pygame.Vector2, radius: float) -> pygame.Vector2:
+        if not self.circle_clear(start, radius):
+            recovered = self._nearest_clear_point(start, radius, max_distance=self.tile_size * 3.0)
+            return recovered if recovered is not None else start
+
+        candidates = [self._last_clear_on_segment(start, end, radius)]
+        for axes in (("x", "y"), ("y", "x")):
+            pos = pygame.Vector2(start)
+            for axis in axes:
+                target = pygame.Vector2(end.x, pos.y) if axis == "x" else pygame.Vector2(pos.x, end.y)
+                pos = self._last_clear_on_segment(pos, target, radius)
+            candidates.append(pos)
+
+        sampled = self._nearest_clear_point(end, radius, max_distance=self.tile_size * 1.5, origin=start)
+        if sampled is not None:
+            candidates.append(sampled)
+
+        delta = end - start
+        direction = delta.normalize() if delta.length_squared() > 0 else pygame.Vector2(0, 0)
+        clear_candidates = [
+            candidate
+            for candidate in candidates
+            if self.circle_clear(candidate, radius) and self.line_clear(start, candidate, radius)
+        ]
+        if not clear_candidates:
+            return start
+        return max(
+            clear_candidates,
+            key=lambda candidate: ((candidate - start).dot(direction), -(candidate - end).length_squared()),
+        )
+
+    def _last_clear_on_segment(self, start: pygame.Vector2, end: pygame.Vector2, radius: float) -> pygame.Vector2:
+        if start.distance_to(end) <= 0.001:
+            return pygame.Vector2(start)
+        if self.line_clear(start, end, radius):
+            return pygame.Vector2(end)
+
+        low = 0.0
+        high = 1.0
+        for _ in range(10):
+            mid = (low + high) * 0.5
+            candidate = start.lerp(end, mid)
+            if self.line_clear(start, candidate, radius):
+                low = mid
+            else:
+                high = mid
+        return start.lerp(end, low)
+
+    def _nearest_clear_point(
+        self,
+        world: pygame.Vector2,
+        radius: float,
+        *,
+        max_distance: float,
+        origin: pygame.Vector2 | None = None,
+    ) -> pygame.Vector2 | None:
+        point = pygame.Vector2(world)
+        if self.circle_clear(point, radius) and (origin is None or self.line_clear(origin, point, radius)):
+            return point
+
+        clamped = self._clamp_world(point, radius)
+        if clamped != point and self.circle_clear(clamped, radius) and (origin is None or self.line_clear(origin, clamped, radius)):
+            return clamped
+
+        step = max(2.0, min(6.0, self.tile_size * 0.16))
+        rings = max(1, int(math.ceil(max_distance / step)))
+        for ring in range(1, rings + 1):
+            distance = ring * step
+            samples = max(8, min(64, int(math.ceil(math.tau * distance / step))))
+            best: pygame.Vector2 | None = None
+            best_score = float("inf")
+            offset = (math.pi / samples) if ring % 2 else 0.0
+            for index in range(samples):
+                angle = offset + index * math.tau / samples
+                candidate = point + pygame.Vector2(math.cos(angle), math.sin(angle)) * distance
+                if not self.circle_clear(candidate, radius):
+                    continue
+                if origin is not None and not self.line_clear(origin, candidate, radius):
+                    continue
+                score = (candidate - point).length_squared()
+                if score < best_score:
+                    best = candidate
+                    best_score = score
+            if best is not None:
+                return best
+        return None
+
+    def _clamp_world(self, world: pygame.Vector2, radius: float) -> pygame.Vector2:
+        point = pygame.Vector2(world)
         world_width = self.width * self.tile_size
         world_height = self.height * self.tile_size
         point.x = max(radius, min(world_width - radius, point.x))
         point.y = max(radius, min(world_height - radius, point.y))
-        return point, collided
+        return point
 
     def circle_clear(self, world: pygame.Vector2, radius: float) -> bool:
         point = pygame.Vector2(world)
@@ -467,7 +613,8 @@ class GameGrid:
         world_height = self.height * self.tile_size
         if not (radius <= point.x <= world_width - radius and radius <= point.y <= world_height - radius):
             return False
-        if not self.passable(self.cell_from_world(point)):
+        center_cell = self.cell_from_world(point)
+        if not self.passable(center_cell):
             return False
 
         min_x = int((point.x - radius) // self.tile_size)
@@ -478,7 +625,9 @@ class GameGrid:
         for x in range(min_x, max_x + 1):
             for y in range(min_y, max_y + 1):
                 cell = (x, y)
-                if not self.in_bounds(cell) or not self.blocked(cell):
+                if not self.in_bounds(cell) or not self._terrain_radius_compatible(center_cell, cell):
+                    return False
+                if not self.blocked(cell):
                     continue
                 rect = self.cell_rect(cell)
                 closest = pygame.Vector2(
@@ -506,9 +655,14 @@ class GameGrid:
 
     def _can_step_diagonal(self, cell: tuple[int, int], dx: int, dy: int) -> bool:
         if dx == 0 or dy == 0:
-            return True
+            return self._can_move_between(cell, (cell[0] + dx, cell[1] + dy))
         x, y = cell
-        return self.passable((x + dx, y)) and self.passable((x, y + dy))
+        candidate = (x + dx, y + dy)
+        if not self.in_bounds(candidate) or candidate in self.walls or candidate in self.towers:
+            return False
+        if (x + dx, y) in self.walls or (x + dx, y) in self.towers or (x, y + dy) in self.walls or (x, y + dy) in self.towers:
+            return False
+        return candidate in self.terrain.linked_diagonal_neighbors(cell) or self.terrain.can_traverse(cell, candidate)
 
     def _all_spawns_reachable_with_candidate(self, blocked_cell: tuple[int, int]) -> bool:
         if blocked_cell == self.townhall_cell:
@@ -516,9 +670,9 @@ class GameGrid:
         queue: deque[tuple[int, int]] = deque([self.townhall_cell])
         visited = {self.townhall_cell}
         while queue:
-            x, y = queue.popleft()
-            for neighbor in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-                if neighbor in visited or neighbor == blocked_cell or not self.passable(neighbor):
+            cell = queue.popleft()
+            for neighbor in self._cardinal_navigation_neighbors(cell, blocked_cell=blocked_cell):
+                if neighbor in visited:
                     continue
                 visited.add(neighbor)
                 queue.append(neighbor)
@@ -542,7 +696,9 @@ class GameGrid:
                             continue
                         neighbor = (cx + dx, cy + dy)
                         distance = self.distance_at(neighbor)
-                        if distance is None or not self._can_step_diagonal((cx, cy), dx, dy):
+                        if distance is None:
+                            continue
+                        if dx != 0 and dy != 0 and not self._can_step_diagonal((cx, cy), dx, dy):
                             continue
                         if distance < best_distance:
                             best_cell = neighbor
@@ -561,6 +717,112 @@ class GameGrid:
         self.flow_vectors = vectors
         self.flow_targets = targets
 
+    def _cardinal_navigation_neighbors(
+        self,
+        cell: tuple[int, int],
+        *,
+        blocked_cell: tuple[int, int] | None = None,
+    ) -> list[tuple[int, int]]:
+        x, y = cell
+        neighbors: list[tuple[int, int]] = []
+        for candidate in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if candidate == blocked_cell:
+                continue
+            if not self._can_move_between(cell, candidate):
+                continue
+            neighbors.append(candidate)
+        return neighbors
+
+    def _can_move_between(self, start: tuple[int, int], goal: tuple[int, int]) -> bool:
+        if not self.in_bounds(start) or not self.in_bounds(goal) or goal in self.walls or goal in self.towers:
+            return False
+        if goal in self.terrain.linked_cardinal_neighbors(start):
+            return True
+        if goal in self.terrain.linked_diagonal_neighbors(start):
+            return True
+        return self.terrain.can_traverse(start, goal)
+
+    def _terrain_radius_compatible(self, center_cell: tuple[int, int], cell: tuple[int, int]) -> bool:
+        if not self.in_bounds(cell) or not self.terrain.is_walkable(cell):
+            return False
+        if cell == center_cell:
+            return True
+        center_elevation = self.terrain.elevation_at(center_cell)
+        cell_elevation = self.terrain.elevation_at(cell)
+        if center_elevation == cell_elevation:
+            return True
+        return (
+            self.terrain.can_traverse(center_cell, cell)
+            or self.terrain.can_traverse(cell, center_cell)
+            or self._terrain_stair_overlap_compatible(center_cell, cell)
+        )
+
+    def _terrain_stair_overlap_compatible(self, a: tuple[int, int], b: tuple[int, int]) -> bool:
+        a_elevation = self.terrain.elevation_at(a)
+        b_elevation = self.terrain.elevation_at(b)
+        if abs(a_elevation - b_elevation) != 1:
+            return False
+        low_elevation = min(a_elevation, b_elevation)
+        high_elevation = max(a_elevation, b_elevation)
+        min_x = min(a[0], b[0]) - 1
+        max_x = max(a[0], b[0]) + 1
+        min_y = min(a[1], b[1]) - 1
+        max_y = max(a[1], b[1]) + 1
+        for sx in range(min_x, max_x + 1):
+            for sy in range(min_y, max_y + 1):
+                stair = (sx, sy)
+                if not self.in_bounds(stair) or self.terrain.cell(stair).feature != STAIR_SOUTH:
+                    continue
+                top = (sx, sy - 1)
+                if self.terrain.elevation_at(stair) != low_elevation or self.terrain.elevation_at(top) != high_elevation:
+                    continue
+                if self._cell_in_stair_overlap_zone(stair, a, low_elevation, high_elevation) and self._cell_in_stair_overlap_zone(stair, b, low_elevation, high_elevation):
+                    return True
+        return False
+
+    def _cell_in_stair_overlap_zone(
+        self,
+        stair: tuple[int, int],
+        cell: tuple[int, int],
+        low_elevation: int,
+        high_elevation: int,
+    ) -> bool:
+        sx, sy = stair
+        x, y = cell
+        elevation = self.terrain.elevation_at(cell)
+        if elevation == low_elevation:
+            return y == sy and abs(x - sx) <= 1
+        if elevation == high_elevation:
+            return y == sy - 1 and abs(x - sx) <= 1
+        return False
+
+    def _terrain_line_clear(self, start: pygame.Vector2, end: pygame.Vector2, radius: float) -> bool:
+        delta = end - start
+        length = delta.length()
+        if length == 0:
+            return self.circle_clear(start, radius)
+
+        steps = max(1, int(math.ceil(length / max(4.0, self.tile_size * 0.35))))
+        previous_cell = self.cell_from_world(start)
+        for index in range(1, steps + 1):
+            point = start.lerp(end, index / steps)
+            if not self.circle_clear(point, radius):
+                return False
+            cell = self.cell_from_world(point)
+            if cell == previous_cell:
+                continue
+            dx = cell[0] - previous_cell[0]
+            dy = cell[1] - previous_cell[1]
+            if abs(dx) > 1 or abs(dy) > 1:
+                return False
+            if dx != 0 and dy != 0:
+                if not self._can_step_diagonal(previous_cell, dx, dy) and not self._terrain_stair_overlap_compatible(previous_cell, cell):
+                    return False
+            elif not self._can_move_between(previous_cell, cell) and not self._terrain_stair_overlap_compatible(previous_cell, cell):
+                return False
+            previous_cell = cell
+        return True
+
     def _navigation_neighbors(self, cell: tuple[int, int], radius: float) -> list[tuple[tuple[int, int], float]]:
         radius_key = self._radius_key(radius)
         cache_key = (cell, radius_key)
@@ -578,9 +840,15 @@ class GameGrid:
                 candidate = (x + dx, y + dy)
                 if not self._cell_clear_for_radius(candidate, query_radius):
                     continue
-                if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy):
+                stair_overlap = self._terrain_stair_overlap_compatible(cell, candidate)
+                if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy) and not stair_overlap:
                     continue
-                neighbors.append((candidate, math.sqrt(2) if dx != 0 and dy != 0 else 1.0))
+                terrain_cost = self.terrain.movement_cost(cell, candidate)
+                if math.isinf(terrain_cost) and stair_overlap:
+                    terrain_cost = math.sqrt(2) + 0.35
+                if math.isinf(terrain_cost):
+                    continue
+                neighbors.append((candidate, terrain_cost))
         self._neighbor_cache[cache_key] = neighbors
         return neighbors
 

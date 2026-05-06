@@ -365,10 +365,11 @@ class ResourceHarvester:
             direction = pygame.Vector2(math.cos(angle), math.sin(angle))
             candidates.append(center + direction * ring_radius)
 
+        nav_radius = game.grid.navigation_radius(self.owner.radius)
         for point in candidates:
-            if game.grid.circle_clear(point, self.owner.radius):
+            if game.grid.circle_clear(point, nav_radius):
                 return point
-        return game.grid.nearest_clear_world(candidates[0], self.owner.radius, max_radius=4)
+        return game.grid.nearest_clear_world(candidates[0], nav_radius, max_radius=4)
 
     def carry_capacity_for(self, game) -> int:
         research = getattr(game, "research", None)

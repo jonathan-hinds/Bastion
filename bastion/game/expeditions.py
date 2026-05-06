@@ -271,7 +271,7 @@ class ExpeditionDungeonGenerator:
             self._carve_corridor(anchor.rect.center, side.rect.center)
         self._add_floor_detail()
 
-        grid = GameGrid(self.width, self.height, self.tile_size)
+        grid = GameGrid(self.width, self.height, self.tile_size, procedural_terrain=False)
         grid.townhall_cell = main_rooms[0].rect.center
         walls = {
             (x, y)
@@ -671,7 +671,7 @@ class ExpeditionRun:
             if not troop.alive:
                 continue
             rotated = offset.rotate_rad(self.facing_angle + math.pi / 2)
-            troop.station = self.grid.nearest_clear_world(self.party_center + rotated, troop.radius, max_radius=5)
+            troop.station = self.grid.nearest_clear_world(self.party_center + rotated, self.grid.navigation_radius(troop.radius), max_radius=5)
         self._emit_party_whisp(dt, previous_center, moving)
 
     def _trigger_rooms(self) -> None:

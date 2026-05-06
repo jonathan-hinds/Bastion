@@ -53,13 +53,14 @@ class PathNavigator:
 
         target = pygame.Vector2(goal)
         radius = float(radius if radius is not None else getattr(self.owner, self.radius_attr))
+        nav_radius = game.grid.navigation_radius(radius)
         speed = float(speed if speed is not None else getattr(self.owner, "speed"))
         acceleration = float(acceleration if acceleration is not None else getattr(self.owner, "acceleration"))
 
         self._update_stuck_timer(dt, target, arrival_radius)
-        self._ensure_path(target, radius, dt, game.grid, arrival_radius)
+        self._ensure_path(target, nav_radius, dt, game.grid, arrival_radius)
 
-        waypoint = self._current_waypoint(radius, game.grid, dt)
+        waypoint = self._current_waypoint(nav_radius, game.grid, dt)
         to_waypoint = waypoint - self.owner.pos
         to_goal = target - self.owner.pos
         if to_waypoint.length_squared() == 0:
@@ -67,8 +68,8 @@ class PathNavigator:
         else:
             desired_dir = to_waypoint.normalize()
 
-        avoid = game.grid.obstacle_avoidance_from_world(self.owner.pos, radius)
-        separation = self._separation_for_frame(neighbors, radius, dt)
+        avoid = game.grid.obstacle_avoidance_from_world(self.owner.pos, nav_radius)
+        separation = self._separation_for_frame(neighbors, nav_radius, dt)
         if desired_dir.length_squared() > 0:
             tangent = pygame.Vector2(-desired_dir.y, desired_dir.x)
             desired_dir += tangent * self.side_bias
@@ -115,14 +116,15 @@ class PathNavigator:
             return
 
         radius = float(radius if radius is not None else getattr(self.owner, self.radius_attr))
+        nav_radius = game.grid.navigation_radius(radius)
         speed = float(speed if speed is not None else getattr(self.owner, "speed"))
         acceleration = float(acceleration if acceleration is not None else getattr(self.owner, "acceleration"))
         goal_point = pygame.Vector2(goal) if goal is not None else self.owner.pos + desired_dir
         self._update_stuck_timer(dt, goal_point, max(radius * 2.0, 10.0))
 
         desired_dir = desired_dir.normalize()
-        avoid = game.grid.obstacle_avoidance_from_world(self.owner.pos, radius)
-        separation = self._separation_for_frame(neighbors, radius, dt)
+        avoid = game.grid.obstacle_avoidance_from_world(self.owner.pos, nav_radius)
+        separation = self._separation_for_frame(neighbors, nav_radius, dt)
         tangent = pygame.Vector2(-desired_dir.y, desired_dir.x)
         desired_dir += tangent * self.side_bias + avoid * 0.90 + separation * separation_strength
         if desired_dir.length_squared() > 0:

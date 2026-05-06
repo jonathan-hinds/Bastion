@@ -8,9 +8,9 @@ import random
 import pygame
 
 from bastion import config
-from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
+from bastion.engine.drawing import draw_circle_alpha, draw_ellipse_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
-from bastion.engine.sprites import draw_building_sprite, draw_building_sprite_at, draw_tower_sprite
+from bastion.engine.sprites import draw_building_sprite, draw_building_sprite_at, draw_terrain_shadow_overlay, draw_terrain_tile, draw_tower_sprite, terrain_sprite_frame
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
@@ -20,6 +20,7 @@ from bastion.game.items import ActiveItemBuff, DroppedItem, ITEM_DEFINITIONS, In
 from bastion.game.research import ResearchManager
 from bastion.game.resources import GoldDeposit, MineralDeposit, MineralExtractor
 from bastion.game.round_events import RoundEventManager
+from bastion.game.terrain_shadows import TerrainShadowCalculator
 from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUEPRINTS, stats_for, tower_name, xp_needed
 from bastion.game.units import Barracks, ExpeditionCampsite, HOUSE_CAPACITY, HeroHall, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
 from bastion.game.waves import WaveManager
@@ -121,6 +122,7 @@ class GameState:
 
     def reset(self) -> None:
         self.grid = GameGrid()
+        self.terrain_shadows = TerrainShadowCalculator()
         self.fog = None
         self.wave_manager = WaveManager(self.grid)
         self.ambient_mobs = AmbientMobManager(self.grid)
@@ -143,6 +145,7 @@ class GameState:
         self.troops: list[Troop] = []
         self.enemies: list[Enemy] = []
         self.resource_deposits: list[MineralDeposit] = []
+        self._resource_spawn_pool: list[tuple[int, int]] | None = None
         self.mineral_deposits = self.resource_deposits
         self.projectiles = []
         self.enemy_projectiles = []
@@ -878,6 +881,8 @@ class GameState:
             for neighbor in neighbors:
                 if neighbor in came_from or not self.grid.in_bounds(neighbor):
                     continue
+                if not self.grid.terrain.can_traverse(current, neighbor):
+                    continue
                 if neighbor not in (start, goal) and self.grid.blocked(neighbor):
                     continue
                 came_from[neighbor] = current
@@ -966,8 +971,6 @@ class GameState:
                     cell = (cx + dx, cy + dy)
                     if not self.can_build_on(cell):
                         continue
-                    if not self.grid.would_keep_paths_open(cell, "tower"):
-                        continue
                     core, path, _reason = self.arcane_source_for_cell(cell)
                     if core is not None and path:
                         candidates.append(cell)
@@ -976,23 +979,26 @@ class GameState:
         return None
 
     def random_resource_deposit_cell(self) -> tuple[int, int] | None:
-        cells = [
-            (x, y)
-            for x in range(3, self.grid.width - 3)
-            for y in range(3, self.grid.height - 3)
-            if self.grid.buildable((x, y))
-            and not self.is_core_reserve((x, y))
-            and self.active_resource_at((x, y)) is None
-        ]
-        random.shuffle(cells)
-        for cell in cells:
+        if not self._resource_spawn_pool:
+            self._resource_spawn_pool = [
+                (x, y)
+                for x in range(3, self.grid.width - 3)
+                for y in range(3, self.grid.height - 3)
+                if self.grid.buildable((x, y)) and not self.is_core_reserve((x, y))
+            ]
+            random.shuffle(self._resource_spawn_pool)
+
+        while self._resource_spawn_pool:
+            cell = self._resource_spawn_pool.pop()
+            if not self.grid.buildable(cell) or self.is_core_reserve(cell) or self.active_resource_at(cell) is not None:
+                continue
             center = self.grid.world_center(cell)
             if any(core.pos.distance_to(center) < self.grid.tile_size * 8 for core in self.core_targets):
                 continue
             if any(deposit.active and deposit.pos.distance_to(center) < self.grid.tile_size * 8 for deposit in self.resource_deposits):
                 continue
             return cell
-        return cells[0] if cells else None
+        return None
 
     def random_mineral_cell(self) -> tuple[int, int] | None:
         return self.random_resource_deposit_cell()
@@ -2146,10 +2152,11 @@ class GameState:
         if sum(1 for troop in self.troops if troop.alive) >= self.troop_capacity():
             return False
         data = TROOP_DATA[kind]
+        nav_radius = self.grid.navigation_radius(data.radius)
         candidates = self._spawn_cells_around(barracks.cell, max_radius=3)
         for cell in candidates:
             pos = self.grid.world_center(cell)
-            if not self.grid.circle_clear(pos, data.radius):
+            if not self.grid.circle_clear(pos, nav_radius):
                 continue
             if any(troop.alive and troop.pos.distance_to(pos) < troop.radius + data.radius + 3 for troop in self.troops):
                 continue
@@ -2165,10 +2172,11 @@ class GameState:
         if sum(1 for troop in self.troops if troop.alive) >= self.troop_capacity():
             return False
         data = TROOP_DATA[kind]
+        nav_radius = self.grid.navigation_radius(data.radius)
         candidates = [center] + self._spawn_cells_around(center, max_radius=4)
         for cell in candidates:
             pos = self.grid.world_center(cell)
-            if not self.grid.circle_clear(pos, data.radius):
+            if not self.grid.circle_clear(pos, nav_radius):
                 continue
             if any(troop.alive and troop.pos.distance_to(pos) < troop.radius + data.radius + 3 for troop in self.troops):
                 continue
@@ -2639,6 +2647,7 @@ class GameState:
         previous_clip = surface.get_clip()
         surface.set_clip(original_viewport)
 
+        self._draw_terrain(surface, camera, viewport)
         self._draw_map_boundary(surface, camera, viewport)
 
         mouse_in_world = original_viewport.collidepoint(mouse_pos)
@@ -2657,18 +2666,35 @@ class GameState:
         self._draw_walls(surface, camera, viewport, hover_wall)
         self._draw_arcane_network(surface, camera, viewport)
         self.ambient_mobs.draw_base_arcane_networks(surface, camera, viewport, self)
-        self._draw_townhalls(surface, camera, viewport, fonts["tiny"])
+        self._draw_shield_networks(surface, camera, viewport)
+
+        render_jobs = []
+        for core in self.core_targets:
+            render_jobs.append((
+                *self._render_sort_key(core.pos, 30),
+                lambda core=core: self._draw_shadowed_structure(
+                    surface,
+                    camera,
+                    viewport,
+                    core,
+                    lambda: self._draw_core(surface, camera, viewport, fonts["tiny"], core),
+                    world_size=CORE_SPRITE_WORLD_SIZE,
+                ),
+            ))
+
         for deposit in self.resource_deposits:
             if not self.is_world_explored(deposit.pos, deposit.radius):
                 continue
             deposit.harvest_enabled = self.resource_is_connected(deposit)
-            deposit.draw(surface, camera, viewport)
+            render_jobs.append((*self._render_sort_key(deposit.pos, 18), lambda deposit=deposit: deposit.draw(surface, camera, viewport)))
 
         for dropped_item in self.dropped_items:
             if self.is_world_explored(dropped_item.pos, 12):
-                dropped_item.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(dropped_item.pos, 19), lambda dropped_item=dropped_item: dropped_item.draw(surface, camera, viewport)))
 
-        self._draw_shield_networks(surface, camera, viewport)
+        for zone in self.ability_zones:
+            if self.is_world_explored(zone.pos, zone.radius):
+                render_jobs.append((*self._render_sort_key(zone.pos, 20), lambda zone=zone: zone.draw(surface, camera, viewport)))
 
         for building in self.buildings:
             selected = (
@@ -2684,37 +2710,88 @@ class GameState:
                 or building is self.selected_shield
             )
             hovered = hover_kind == "structure" and hover_value == id(building)
-            self._draw_building_structure(surface, camera, viewport, fonts["tiny"], building, selected, hovered)
+            render_jobs.append((
+                *self._render_sort_key(building.pos, 32),
+                lambda building=building, selected=selected, hovered=hovered: self._draw_shadowed_structure(
+                    surface,
+                    camera,
+                    viewport,
+                    building,
+                    lambda: self._draw_building_structure(surface, camera, viewport, fonts["tiny"], building, selected, hovered),
+                    world_size=BUILDING_SPRITE_WORLD_SIZE,
+                ),
+            ))
         for tower in self.towers:
             hovered = hover_kind == "structure" and hover_value == id(tower)
-            tower.draw(surface, camera, viewport, tower is self.selected_tower, hovered)
-        for zone in self.ability_zones:
-            if self.is_world_explored(zone.pos, zone.radius):
-                zone.draw(surface, camera, viewport)
+            render_jobs.append((
+                *self._render_sort_key(tower.pos, 33),
+                lambda tower=tower, hovered=hovered: self._draw_shadowed_structure(
+                    surface,
+                    camera,
+                    viewport,
+                    tower,
+                    lambda: tower.draw(surface, camera, viewport, tower is self.selected_tower, hovered),
+                    world_size=BUILDING_SPRITE_WORLD_SIZE,
+                ),
+            ))
         for troop in self.troops:
             hovered = hover_kind == "troop" and hover_value == id(troop)
-            troop.draw(surface, camera, viewport, troop in self.selected_troops, hovered)
+            render_jobs.append((
+                *self._render_sort_key(troop.pos, 42),
+                lambda troop=troop, hovered=hovered: self._draw_shadowed_unit(
+                    surface,
+                    camera,
+                    viewport,
+                    troop,
+                    lambda: troop.draw(surface, camera, viewport, troop in self.selected_troops, hovered),
+                ),
+            ))
         for enemy in self.enemies:
             if self.is_world_explored(enemy.pos, enemy.radius):
-                enemy.draw(surface, camera, viewport)
+                if getattr(enemy, "target_class", "") == "enemy_structure":
+                    render_jobs.append((
+                        *self._render_sort_key(enemy.pos, 43),
+                        lambda enemy=enemy: self._draw_shadowed_structure(
+                            surface,
+                            camera,
+                            viewport,
+                            enemy,
+                            lambda: enemy.draw(surface, camera, viewport),
+                            world_size=self._structure_shadow_world_size(enemy),
+                        ),
+                    ))
+                else:
+                    render_jobs.append((
+                        *self._render_sort_key(enemy.pos, 43),
+                        lambda enemy=enemy: self._draw_shadowed_unit(
+                            surface,
+                            camera,
+                            viewport,
+                            enemy,
+                            lambda: enemy.draw(surface, camera, viewport),
+                        ),
+                    ))
         for projectile in self.projectiles:
             if self.is_world_explored(projectile.pos, 8):
-                projectile.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(projectile.pos, 60), lambda projectile=projectile: projectile.draw(surface, camera, viewport)))
         for projectile in self.enemy_projectiles:
             if self.is_world_explored(projectile.pos, 8):
-                projectile.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(projectile.pos, 60), lambda projectile=projectile: projectile.draw(surface, camera, viewport)))
         for pulse in self.damage_pulses:
             if self.is_world_explored(pulse.pos, pulse.radius):
-                pulse.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(pulse.pos, 70), lambda pulse=pulse: pulse.draw(surface, camera, viewport)))
         for beam in self.beams:
             if self.is_world_explored(beam.start, 4) and self.is_world_explored(beam.end, 4):
-                beam.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(beam.end, 71), lambda beam=beam: beam.draw(surface, camera, viewport)))
         for particle in self.particles:
             if self.is_world_explored(particle.pos, particle.radius):
-                particle.draw(surface, camera, viewport)
+                render_jobs.append((*self._render_sort_key(particle.pos, 72), lambda particle=particle: particle.draw(surface, camera, viewport)))
         for text in self.texts:
             if self.is_world_explored(text.pos, 8):
-                text.draw(surface, camera, viewport, fonts["tiny"])
+                render_jobs.append((*self._render_sort_key(text.pos, 80), lambda text=text: text.draw(surface, camera, viewport, fonts["tiny"])))
+
+        for *_key, draw_job in sorted(render_jobs, key=lambda item: item[:-1]):
+            draw_job()
 
         self.fog.draw(surface, camera, viewport)
 
@@ -2731,6 +2808,127 @@ class GameState:
             math.ceil(bottom_right.y - top_left.y),
         )
         pygame.draw.rect(surface, config.PALETTE.line, rect, 1)
+
+    def _draw_shadowed_unit(self, surface: pygame.Surface, camera, viewport: pygame.Rect, actor, draw_job) -> None:
+        self._draw_unit_shadow(surface, camera, viewport, actor)
+        draw_job()
+
+    def _draw_shadowed_structure(
+        self,
+        surface: pygame.Surface,
+        camera,
+        viewport: pygame.Rect,
+        structure,
+        draw_job,
+        *,
+        world_size: float | None = None,
+    ) -> None:
+        self._draw_structure_shadow(surface, camera, viewport, structure, world_size=world_size)
+        draw_job()
+
+    def _draw_unit_shadow(self, surface: pygame.Surface, camera, viewport: pygame.Rect, actor) -> None:
+        if not getattr(actor, "alive", True):
+            return
+        pos = getattr(actor, "pos", None)
+        if pos is None:
+            return
+        radius = max(4.0, float(getattr(actor, "radius", self.grid.tile_size * 0.4)))
+        center = camera.world_to_screen(pos, viewport)
+        rect = pygame.Rect(
+            0,
+            0,
+            max(7, int(round(radius * 1.75 * camera.zoom))),
+            max(4, int(round(radius * 0.58 * camera.zoom))),
+        )
+        rect.center = (
+            int(round(center.x)),
+            int(round(center.y + radius * 0.58 * camera.zoom)),
+        )
+        if rect.colliderect(viewport):
+            draw_ellipse_alpha(surface, rect, config.PALETTE.black, config.ENTITY_SHADOW_ALPHA)
+
+    def _draw_structure_shadow(
+        self,
+        surface: pygame.Surface,
+        camera,
+        viewport: pygame.Rect,
+        structure,
+        *,
+        world_size: float | None = None,
+    ) -> None:
+        if not getattr(structure, "alive", True):
+            return
+        pos = getattr(structure, "pos", None)
+        if pos is None:
+            return
+        base_size = float(world_size) if world_size is not None else max(
+            self.grid.tile_size * 0.82,
+            float(getattr(structure, "radius", self.grid.tile_size * 0.5)) * 1.85,
+        )
+        size = max(8, int(round(base_size * 0.84 * camera.zoom)))
+        center = camera.world_to_screen(pos, viewport)
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (
+            int(round(center.x)),
+            int(round(center.y + size * 0.06)),
+        )
+        if rect.colliderect(viewport):
+            draw_rect_alpha(surface, rect, config.PALETTE.black, config.ENTITY_SHADOW_ALPHA)
+
+    def _structure_shadow_world_size(self, structure) -> float:
+        kind = getattr(structure, "kind", "")
+        if kind in {"core", "enemy_core"}:
+            return CORE_SPRITE_WORLD_SIZE
+        return max(BUILDING_SPRITE_WORLD_SIZE, float(getattr(structure, "radius", self.grid.tile_size * 0.5)) * 1.85)
+
+    def _draw_terrain(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
+        x0, y0, x1, y1 = camera.visible_tile_bounds(viewport, self.grid.tile_size, self.grid.width, self.grid.height)
+        reference_elevation = self.terrain_shadows.reference_elevation(self.grid.terrain)
+
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                cell = (x, y)
+                terrain_cell = self.grid.terrain.cell(cell)
+                frame_index = terrain_sprite_frame(cell)
+                rect = draw_terrain_tile(surface, camera, viewport, cell, terrain_cell.tile_name, self.grid.tile_size, frame_index=frame_index)
+                if rect is None:
+                    rect = self._cell_screen_rect(cell, camera, viewport)
+                    shade = max(18, min(68, 28 + terrain_cell.elevation * 15))
+                    pygame.draw.rect(surface, (shade, shade, shade), rect)
+                shadow_opacity = self.terrain_shadows.opacity_for(
+                    self.grid.terrain,
+                    cell,
+                    reference_elevation=reference_elevation,
+                )
+                if shadow_opacity > 0 and draw_terrain_shadow_overlay(
+                    surface,
+                    camera,
+                    viewport,
+                    cell,
+                    terrain_cell.tile_name,
+                    self.grid.tile_size,
+                    shadow_opacity,
+                    frame_index=frame_index,
+                ) is None:
+                    draw_rect_alpha(surface, rect, config.PALETTE.black, int(round(shadow_opacity * 255)))
+
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                terrain_cell = self.grid.terrain.cell((x, y))
+                if terrain_cell.cliff_tile_name is not None:
+                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.cliff_tile_name, self.grid.tile_size)
+
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                terrain_cell = self.grid.terrain.cell((x, y))
+                if terrain_cell.feature_tile_name is not None:
+                    draw_terrain_tile(surface, camera, viewport, (x, y), terrain_cell.feature_tile_name, self.grid.tile_size, phase_owner=(x, y))
+
+    def _render_sort_key(self, pos: pygame.Vector2 | tuple[float, float], layer: int) -> tuple[int, float, float]:
+        point = pygame.Vector2(pos)
+        cell = self.grid.cell_from_world(point)
+        elevation = self.grid.terrain.elevation_at(cell) if self.grid.in_bounds(cell) else 0
+        return layer, point.y - elevation * (self.grid.tile_size * 0.18), point.x
 
     def _draw_building_structure(
         self,
