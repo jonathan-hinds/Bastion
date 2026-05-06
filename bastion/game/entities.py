@@ -357,6 +357,10 @@ class Enemy:
                 self._update_melee_assault(dt, game, taunt_target)
             return
 
+        camp_worker = getattr(self, "camp_worker", None)
+        if camp_worker is not None and camp_worker.update(dt, game, self):
+            return
+
         if self.is_ambient:
             self._update_ambient(dt, game)
             return

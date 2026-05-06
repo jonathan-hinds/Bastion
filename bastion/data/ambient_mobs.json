@@ -12,6 +12,32 @@
     "blocked_retry_seconds": 8,
     "safe_radius": 310
   },
+  "base_camps": {
+    "enabled": true,
+    "max_active_camps": 5,
+    "min_night_for_escalation": 2,
+    "escalation_min_seconds": 80,
+    "escalation_max_seconds": 170,
+    "escalation_chance": 0.48,
+    "safe_radius": 330,
+    "visible_radius": 230,
+    "worker_enemy_id": "small",
+    "starting_gold": 70,
+    "starting_minerals": 28,
+    "build_interval_min": 12,
+    "build_interval_max": 28,
+    "extractor_search_radius": 760,
+    "max_extractors": 2,
+    "max_towers": 5,
+    "core_defense_towers": 1,
+    "extractor_defense_towers": 1,
+    "worker_carry_capacity": 5,
+    "worker_gather_rate": 1.75,
+    "worker_gather_radius": 90,
+    "raid_size_min": 2,
+    "raid_size_max": 5,
+    "garrison_soft_cap": 12
+  },
   "templates": [
     {
       "id": "raider_patrol",

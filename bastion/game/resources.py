@@ -431,6 +431,8 @@ class MineralExtractor:
         rect.center = center
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.004 + self.pulse)
         fill, mark = hover_feedback.inverted_pair(hovered)
+        if getattr(self.deposit, "kind", "") == "gold":
+            fill, mark = mark, fill
 
         pygame.draw.rect(surface, fill, rect)
         pygame.draw.rect(surface, mark, rect, max(1, int(2 * camera.zoom)))

@@ -1271,6 +1271,8 @@ class GameState:
         if not enemy.alive:
             return
         enemy.alive = False
+        if hasattr(enemy, "on_killed"):
+            enemy.on_killed(self, owner)
         self.gold += enemy.reward
         self.texts.append(FloatingText(pygame.Vector2(enemy.pos), f"+{enemy.reward}", 0.7))
         self.spawn_death_explosion(enemy)
@@ -2648,6 +2650,7 @@ class GameState:
 
         self._draw_walls(surface, camera, viewport, hover_wall)
         self._draw_arcane_network(surface, camera, viewport)
+        self.ambient_mobs.draw_base_arcane_networks(surface, camera, viewport, self)
         self._draw_townhalls(surface, camera, viewport, fonts["tiny"])
         for deposit in self.resource_deposits:
             if not self.is_world_explored(deposit.pos, deposit.radius):

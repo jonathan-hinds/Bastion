@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 
 import pygame
 
+from bastion.game.enemy_camps import EnemyBaseCamp, EnemyBaseCampSettings, load_enemy_base_camp_settings
 from bastion.game.enemy_defs import ENEMY_DATA
 
 
@@ -54,6 +55,7 @@ class AmbientMobSettings:
     initial_camps: int
     spawn: MobSpawnSettings
     respawn: MobRespawnSettings
+    base_camps: EnemyBaseCampSettings
     templates: tuple[MobTemplate, ...]
 
     def pick_template(self) -> MobTemplate:
@@ -66,10 +68,22 @@ class MobCamp:
     template: MobTemplate
     enemies: list[object] = field(default_factory=list)
     respawn_timer: float = 0.0
+    base: EnemyBaseCamp | None = None
+    escalation_timer: float = 0.0
+    escalation_delay: float = 0.0
 
     def update(self, dt: float, game, manager: "AmbientMobManager") -> None:
         self.enemies = [enemy for enemy in self.enemies if getattr(enemy, "alive", False)]
+        if self.base is not None:
+            self.base.update(dt, game)
+            if not self.base.alive:
+                self.base = None
+                self.escalation_timer = 0.0
+                self.escalation_delay = manager.roll_base_escalation_delay()
+            return
+
         if self.enemies:
+            manager.update_base_escalation(dt, game, self)
             return
 
         if self.respawn_timer <= 0.0:
@@ -107,6 +121,8 @@ class MobCamp:
             )
             self.enemies.append(enemy)
         self.respawn_timer = 0.0
+        self.escalation_timer = 0.0
+        self.escalation_delay = manager.roll_base_escalation_delay()
 
 
 class AmbientMobManager:
@@ -132,9 +148,66 @@ class AmbientMobManager:
     def active_enemy_count(self) -> int:
         return sum(1 for camp in self.camps for enemy in camp.enemies if getattr(enemy, "alive", False))
 
+    def active_base_count(self) -> int:
+        return sum(1 for camp in self.camps if camp.base is not None and camp.base.alive)
+
+    def draw_base_arcane_networks(self, surface: pygame.Surface, camera, viewport: pygame.Rect, game) -> None:
+        for camp in self.camps:
+            if camp.base is not None and camp.base.alive:
+                camp.base.draw_arcane_network(surface, camera, viewport, game)
+
     def roll_respawn_delay(self) -> float:
         settings = self.settings.respawn
         return random.uniform(settings.min_seconds, settings.max_seconds)
+
+    def roll_base_escalation_delay(self) -> float:
+        return self.settings.base_camps.roll_escalation_delay()
+
+    def update_base_escalation(self, dt: float, game, camp: MobCamp) -> None:
+        settings = self.settings.base_camps
+        if not settings.enabled or camp.base is not None:
+            return
+        wave_manager = getattr(game, "wave_manager", None)
+        current_night = int(getattr(wave_manager, "night_number", getattr(wave_manager, "wave_number", 0))) if wave_manager is not None else 0
+        if current_night < settings.min_night_for_escalation:
+            return
+        if self.active_base_count() >= settings.max_active_camps:
+            return
+        if not camp.enemies:
+            return
+        if self.base_escalation_blocked(game, camp):
+            camp.escalation_timer = max(0.0, camp.escalation_timer - dt * 0.45)
+            if camp.escalation_delay <= 0.0:
+                camp.escalation_delay = self.roll_base_escalation_delay()
+            return
+        if camp.escalation_delay <= 0.0:
+            camp.escalation_delay = self.roll_base_escalation_delay()
+        camp.escalation_timer += dt
+        if camp.escalation_timer < camp.escalation_delay:
+            return
+        camp.escalation_timer = 0.0
+        camp.escalation_delay = self.roll_base_escalation_delay()
+        if random.random() > settings.escalation_chance:
+            return
+        base = EnemyBaseCamp(camp.center, camp, settings, template_id=camp.template.template_id)
+        if base.start(game):
+            camp.base = base
+
+    def base_escalation_blocked(self, game, camp: MobCamp) -> bool:
+        settings = self.settings.base_camps
+        fog = getattr(game, "fog", None)
+        if fog is not None and getattr(fog, "enabled", False) and fog.is_visible_world(camp.center, settings.visible_radius):
+            return True
+        radius = settings.safe_radius
+        for troop in getattr(game, "troops", []):
+            if getattr(troop, "alive", False) and troop.pos.distance_to(camp.center) <= radius + troop.radius:
+                return True
+        structures = [tower for tower in getattr(game, "towers", []) if getattr(tower, "alive", False)]
+        structures.extend(building for building in getattr(game, "buildings", []) if getattr(building, "alive", False))
+        for structure in structures:
+            if structure.pos.distance_to(camp.center) <= radius + getattr(structure, "radius", 0):
+                return True
+        return False
 
     def respawn_blocked(self, game, camp: MobCamp) -> bool:
         radius = self.settings.respawn.safe_radius
@@ -241,6 +314,7 @@ def load_ambient_mob_settings(path: Path | None = None) -> AmbientMobSettings:
             blocked_retry_seconds=max(1.0, float(respawn_data.get("blocked_retry_seconds", 8.0))),
             safe_radius=max(0.0, float(respawn_data.get("safe_radius", 300.0))),
         ),
+        base_camps=load_enemy_base_camp_settings(raw.get("base_camps", {})),
         templates=templates,
     )
 
