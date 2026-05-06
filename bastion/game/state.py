@@ -10,6 +10,7 @@ import pygame
 from bastion import config
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
+from bastion.engine.sprites import draw_building_sprite, draw_building_sprite_at, draw_tower_sprite
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
@@ -106,6 +107,11 @@ class WallTarget:
     @property
     def alive(self) -> bool:
         return self.cell in self.game.grid.walls
+
+
+BUILDING_SPRITE_WORLD_SIZE = config.TILE_SIZE * 1.125
+WALL_SPRITE_WORLD_SIZE = float(config.TILE_SIZE)
+CORE_SPRITE_WORLD_SIZE = 96.0
 
 
 class GameState:
@@ -2678,7 +2684,7 @@ class GameState:
                 or building is self.selected_shield
             )
             hovered = hover_kind == "structure" and hover_value == id(building)
-            building.draw(surface, camera, viewport, fonts["tiny"], selected, hovered)
+            self._draw_building_structure(surface, camera, viewport, fonts["tiny"], building, selected, hovered)
         for tower in self.towers:
             hovered = hover_kind == "structure" and hover_value == id(tower)
             tower.draw(surface, camera, viewport, tower is self.selected_tower, hovered)
@@ -2726,8 +2732,135 @@ class GameState:
         )
         pygame.draw.rect(surface, config.PALETTE.line, rect, 1)
 
+    def _draw_building_structure(
+        self,
+        surface: pygame.Surface,
+        camera,
+        viewport: pygame.Rect,
+        font: pygame.font.Font,
+        building,
+        selected: bool,
+        hovered: bool,
+    ) -> None:
+        center = camera.world_to_screen(building.pos, viewport)
+        scale = hover_feedback.hover_scale(hovered)
+
+        if isinstance(building, Torch):
+            draw_circle_alpha(surface, center, building.aggro_radius * camera.zoom, config.PALETTE.white, 34 if selected else 18, 1)
+            rect = draw_tower_sprite(
+                surface,
+                camera,
+                viewport,
+                building,
+                "torch",
+                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                scale=scale,
+                bounce=True,
+                pulse=True,
+            )
+        elif isinstance(building, ShieldGenerator):
+            rect = draw_tower_sprite(
+                surface,
+                camera,
+                viewport,
+                building,
+                "shield_generator",
+                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                scale=scale,
+                bounce=True,
+                pulse=building.shield_active or building.recharging,
+            )
+            if building.shield_active or building.recharging:
+                phase = pygame.time.get_ticks() * 0.005 + building.pulse
+                alpha = 34 if building.shield_active else 18
+                draw_circle_alpha(surface, center, BUILDING_SPRITE_WORLD_SIZE * camera.zoom * (0.52 + 0.04 * math.sin(phase * 2.0)), config.PALETTE.white, alpha, 1)
+        else:
+            if isinstance(building, TrainingGrounds):
+                draw_circle_alpha(surface, center, building.training_radius * camera.zoom, config.PALETTE.white, 32 if selected else 14, 1)
+            variant = None
+            if isinstance(building, MineralExtractor):
+                variant = "gold" if getattr(building.deposit, "kind", "") == "gold" else "mineral"
+            rect = draw_building_sprite(
+                surface,
+                camera,
+                viewport,
+                building,
+                building.kind,
+                variant=variant,
+                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                scale=scale,
+            )
+
+        if rect is None:
+            building.draw(surface, camera, viewport, font, selected, hovered)
+            return
+
+        if isinstance(building, MineralExtractor) and not building.deposit.active:
+            pygame.draw.line(surface, config.PALETTE.line_bright, rect.topleft, rect.bottomright, max(1, int(camera.zoom)))
+            pygame.draw.line(surface, config.PALETTE.line_bright, rect.topright, rect.bottomleft, max(1, int(camera.zoom)))
+
+        if selected:
+            draw_circle_alpha(surface, center, max(rect.width, rect.height) * 0.58, config.PALETTE.white, 58, 1)
+
+        self._draw_building_progress(surface, camera, rect, building)
+        self._draw_structure_health_bar(surface, rect, getattr(building, "health", 0.0), getattr(building, "max_health", 0.0), camera)
+
+    def _draw_building_progress(self, surface: pygame.Surface, camera, rect: pygame.Rect, building) -> None:
+        progress: float | None = None
+        if isinstance(building, Barracks) and building.train_queue:
+            order = building.train_queue[0]
+            progress = 1.0 - max(0.0, order.remaining / max(0.01, order.total))
+        elif isinstance(building, ResearchBuilding) and building.active_order is not None:
+            progress = 1.0 - max(0.0, building.active_order.remaining / max(0.01, building.active_order.total))
+        elif isinstance(building, Library) and building.active_order is not None:
+            progress = 1.0
+            if building.active_order.ready_item_id is None:
+                progress = 1.0 - max(0.0, building.active_order.remaining / max(0.01, building.active_order.total))
+
+        if progress is not None:
+            self._draw_progress_bar(surface, rect, progress, camera, below=True)
+
+        if isinstance(building, ShieldGenerator) and building.shield_max > 0:
+            self._draw_progress_bar(surface, rect, max(0.0, min(1.0, building.shield / building.shield_max)), camera, below=True, y_offset=8)
+            if building.recharging:
+                bar = pygame.Rect(rect.left, rect.bottom + 8, rect.width, max(2, int(3 * camera.zoom)))
+                draw_rect_alpha(surface, bar.inflate(2, 2), config.PALETTE.white, 34)
+
+        if isinstance(building, MineralExtractor) and building.deposit.active and building.deposit.amount < building.deposit.max_amount:
+            self._draw_progress_bar(surface, rect, max(0.0, building.deposit.amount / max(1, building.deposit.max_amount)), camera, below=True)
+
+    def _draw_progress_bar(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        progress: float,
+        camera,
+        *,
+        below: bool,
+        y_offset: int = 4,
+    ) -> None:
+        height = max(2, int(3 * camera.zoom))
+        bar = pygame.Rect(rect.left, rect.bottom + y_offset if below else rect.top - y_offset - height, rect.width, height)
+        pygame.draw.rect(surface, config.PALETTE.black, bar)
+        fill = bar.copy()
+        fill.width = int(bar.width * max(0.0, min(1.0, progress)))
+        pygame.draw.rect(surface, config.PALETTE.white, fill)
+
+    def _draw_structure_health_bar(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        health: float,
+        max_health: float,
+        camera,
+    ) -> None:
+        if max_health <= 0 or health >= max_health:
+            return
+        self._draw_progress_bar(surface, rect, max(0.0, health / max_health), camera, below=False, y_offset=6)
+
     def _draw_walls(self, surface: pygame.Surface, camera, viewport: pygame.Rect, hover_wall: tuple[int, int] | None = None) -> None:
         edge_width = max(1, int(2 * camera.zoom))
+        sprite_walls = False
         for cell in self.grid.walls:
             rect = self._cell_screen_rect(cell, camera, viewport)
             if not rect.colliderect(viewport):
@@ -2736,29 +2869,46 @@ class GameState:
             draw_rect = hover_feedback.scaled_rect(rect, hovered)
             fill = config.PALETTE.white if hovered else config.PALETTE.dark
             mark = config.PALETTE.black if hovered else config.PALETTE.white
-            pygame.draw.rect(surface, fill, draw_rect)
+            sprite_rect = draw_building_sprite_at(
+                surface,
+                camera,
+                viewport,
+                self.grid.world_center(cell),
+                cell,
+                "wall",
+                world_size=WALL_SPRITE_WORLD_SIZE,
+                scale=hover_feedback.hover_scale(hovered),
+            )
+            if sprite_rect is not None:
+                sprite_walls = True
+                if hovered:
+                    draw_rect_alpha(surface, sprite_rect, config.PALETTE.white, 36, max(1, int(camera.zoom)))
+                draw_rect = sprite_rect
+            else:
+                pygame.draw.rect(surface, fill, draw_rect)
             health = self.grid.wall_health.get(cell, self.grid.wall_max_health)
             if health < self.grid.wall_max_health:
                 damage = 1.0 - max(0.0, health / self.grid.wall_max_health)
                 inset = draw_rect.inflate(-max(3, int(draw_rect.width * 0.28)), -max(3, int(draw_rect.height * 0.28)))
                 draw_rect_alpha(surface, inset, mark, int(24 + damage * 76))
 
-        for cell in self.grid.walls:
-            rect = self._cell_screen_rect(cell, camera, viewport)
-            if not rect.colliderect(viewport):
-                continue
-            hovered = cell == hover_wall
-            draw_rect = hover_feedback.scaled_rect(rect, hovered)
-            mark = config.PALETTE.black if hovered else config.PALETTE.white
-            x, y = cell
-            if (x, y - 1) not in self.grid.walls:
-                pygame.draw.line(surface, mark, draw_rect.topleft, draw_rect.topright, edge_width)
-            if (x + 1, y) not in self.grid.walls:
-                pygame.draw.line(surface, mark, draw_rect.topright, draw_rect.bottomright, edge_width)
-            if (x, y + 1) not in self.grid.walls:
-                pygame.draw.line(surface, mark, draw_rect.bottomleft, draw_rect.bottomright, edge_width)
-            if (x - 1, y) not in self.grid.walls:
-                pygame.draw.line(surface, mark, draw_rect.topleft, draw_rect.bottomleft, edge_width)
+        if not sprite_walls:
+            for cell in self.grid.walls:
+                rect = self._cell_screen_rect(cell, camera, viewport)
+                if not rect.colliderect(viewport):
+                    continue
+                hovered = cell == hover_wall
+                draw_rect = hover_feedback.scaled_rect(rect, hovered)
+                mark = config.PALETTE.black if hovered else config.PALETTE.white
+                x, y = cell
+                if (x, y - 1) not in self.grid.walls:
+                    pygame.draw.line(surface, mark, draw_rect.topleft, draw_rect.topright, edge_width)
+                if (x + 1, y) not in self.grid.walls:
+                    pygame.draw.line(surface, mark, draw_rect.topright, draw_rect.bottomright, edge_width)
+                if (x, y + 1) not in self.grid.walls:
+                    pygame.draw.line(surface, mark, draw_rect.bottomleft, draw_rect.bottomright, edge_width)
+                if (x - 1, y) not in self.grid.walls:
+                    pygame.draw.line(surface, mark, draw_rect.topleft, draw_rect.bottomleft, edge_width)
 
         if self.selected_wall is not None:
             self._draw_wall_component_highlight(surface, camera, viewport, self.selected_wall)
@@ -2883,6 +3033,24 @@ class GameState:
         load_ratio = min(1.0, load / max(1, core.arcane_capacity))
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.004 + core.index)
         draw_circle_alpha(surface, center, size * (0.57 + pulse * 0.06), config.PALETTE.white, int(22 + load_ratio * 34), 1)
+        sprite_rect = draw_building_sprite(
+            surface,
+            camera,
+            viewport,
+            core,
+            "core",
+            world_size=CORE_SPRITE_WORLD_SIZE,
+        )
+        if sprite_rect is not None:
+            load_label = font.render(f"{load}/{core.arcane_capacity}", True, config.PALETTE.text_dim)
+            surface.blit(load_label, load_label.get_rect(center=(sprite_rect.centerx, sprite_rect.bottom + max(8, int(8 * camera.zoom)))))
+            if core.health < core.max_health:
+                bar = pygame.Rect(sprite_rect.left, sprite_rect.top - 7, sprite_rect.width, max(2, int(4 * camera.zoom)))
+                pygame.draw.rect(surface, config.PALETTE.black, bar)
+                fill = bar.copy()
+                fill.width = int(bar.width * max(0.0, core.health / core.max_health))
+                pygame.draw.rect(surface, config.PALETTE.white, fill)
+            return
         rect = pygame.Rect(0, 0, size, size)
         rect.center = (center.x, center.y)
         pygame.draw.rect(surface, config.PALETTE.black, rect)

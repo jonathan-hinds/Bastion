@@ -9,6 +9,7 @@ import pygame
 
 from bastion import config
 from bastion.engine.drawing import draw_circle_alpha
+from bastion.engine.sprites import draw_building_sprite, draw_tower_sprite
 from bastion.game.elements import DEFAULT_RESISTANCES
 from bastion.game.enemy_defs import ENEMY_DATA
 
@@ -101,6 +102,8 @@ UNIT_COSTS = {
 
 HOUSE_CAPACITY = 4
 CORE_CAPACITY = 3
+ENEMY_BUILDING_SPRITE_WORLD_SIZE = config.TILE_SIZE * 1.125
+ENEMY_CORE_SPRITE_WORLD_SIZE = 96.0
 
 
 @dataclass(slots=True)
@@ -194,6 +197,11 @@ class EnemyCampStructure:
         self.attack_range = 215.0 if kind == "enemy_tower" else 0.0
         self.damage = 8.0 if kind == "enemy_tower" else 0.0
         self.fire_rate = 0.85
+        self.visual_target = None
+        self.visual_aim_direction = pygame.Vector2(1, 0)
+        self.shoot_flash_timer = 0.0
+        self.recoil_timer = 0.0
+        self.recoil_duration = 0.12
         self.burn_time = 0.0
         self.burn_dps = 0.0
         self.burn_owner = None
@@ -215,6 +223,8 @@ class EnemyCampStructure:
         if not self.alive:
             return
         self.hit_flash = max(0.0, self.hit_flash - dt * 5.5)
+        self.shoot_flash_timer = max(0.0, self.shoot_flash_timer - dt)
+        self.recoil_timer = max(0.0, self.recoil_timer - dt)
         if self.burn_time > 0:
             self.burn_time = max(0.0, self.burn_time - dt)
             game.damage_enemy(self, self.burn_dps * dt, self.burn_owner, quiet=True, element="fire")
@@ -238,6 +248,7 @@ class EnemyCampStructure:
             self.damage_vulnerability_multiplier = 1.0
             self.damage_vulnerability_source_classes.clear()
         if self.kind == "enemy_tower" and self.stun_time <= 0:
+            self._update_visual_target(game)
             self._update_tower(dt, game)
 
     def _update_tower(self, dt: float, game) -> None:
@@ -248,11 +259,31 @@ class EnemyCampStructure:
         if target is None:
             return
         self.attack_cooldown = 1.0 / max(0.05, self.fire_rate)
+        self.signal_shot(target)
         from bastion.game.entities import EnemyProjectile
 
         game.enemy_projectiles.append(EnemyProjectile(pygame.Vector2(self.pos), target, 315.0, self.damage, owner=self))
         if hasattr(game, "spawn_hit"):
             game.spawn_hit(self.pos, 1)
+
+    def signal_shot(self, target=None) -> None:
+        self.visual_target = target
+        if target is not None and getattr(target, "alive", False):
+            direction = pygame.Vector2(target.pos) - self.pos
+            if direction.length_squared() > 0.01:
+                self.visual_aim_direction = direction
+        self.shoot_flash_timer = 0.055
+        self.recoil_timer = self.recoil_duration
+
+    def _update_visual_target(self, game) -> None:
+        target = self._tower_target(game)
+        if target is None:
+            self.visual_target = None
+            return
+        self.visual_target = target
+        direction = pygame.Vector2(target.pos) - self.pos
+        if direction.length_squared() > 0.01:
+            self.visual_aim_direction = direction
 
     def _tower_target(self, game):
         if getattr(self.taunt_target, "alive", False) and self.taunt_target.pos.distance_to(self.pos) <= self.attack_range + getattr(self.taunt_target, "radius", 0.0):
@@ -345,6 +376,16 @@ class EnemyCampStructure:
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         center = camera.world_to_screen(self.pos, viewport)
         tile = config.TILE_SIZE * camera.zoom
+        sprite_rect = self._draw_sprite_structure(surface, camera, viewport)
+        if sprite_rect is not None:
+            if self.health < self.max_health:
+                bar = pygame.Rect(sprite_rect.left, sprite_rect.top - 6, sprite_rect.width, max(2, int(3 * camera.zoom)))
+                pygame.draw.rect(surface, config.PALETTE.black, bar)
+                health_fill = bar.copy()
+                health_fill.width = int(bar.width * max(0.0, self.health / self.max_health))
+                pygame.draw.rect(surface, config.PALETTE.white, health_fill)
+            return
+
         visual_scale = 1.82 if self.kind == "enemy_core" else 0.9
         size = max(6, int(tile * visual_scale * (1.0 + self.hit_flash * 0.12)))
         rect = pygame.Rect(0, 0, size, size)
@@ -374,6 +415,41 @@ class EnemyCampStructure:
             health_fill = bar.copy()
             health_fill.width = int(bar.width * max(0.0, self.health / self.max_health))
             pygame.draw.rect(surface, config.PALETTE.white, health_fill)
+
+    def _draw_sprite_structure(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> pygame.Rect | None:
+        if self.kind == "enemy_tower":
+            target = self.visual_target if getattr(self.visual_target, "alive", False) else None
+            recoil = self.recoil_timer / max(0.001, self.recoil_duration)
+            return draw_tower_sprite(
+                surface,
+                camera,
+                viewport,
+                self,
+                "enemy_tower",
+                world_size=ENEMY_BUILDING_SPRITE_WORLD_SIZE,
+                target_pos=getattr(target, "pos", None),
+                recoil=recoil,
+                flash=self.shoot_flash_timer > 0.0 or self.hit_flash > 0.0,
+            )
+
+        variant = None
+        if self.kind == "enemy_extractor":
+            variant = "gold" if getattr(self.deposit, "kind", "") == "gold" else "mineral"
+        world_size = ENEMY_CORE_SPRITE_WORLD_SIZE if self.kind == "enemy_core" else ENEMY_BUILDING_SPRITE_WORLD_SIZE
+        rect = draw_building_sprite(
+            surface,
+            camera,
+            viewport,
+            self,
+            self.kind,
+            variant=variant,
+            world_size=world_size,
+            white=self.hit_flash > 0.0,
+        )
+        if rect is not None and self.kind == "enemy_core":
+            pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.004 + self.phase)
+            draw_circle_alpha(surface, camera.world_to_screen(self.pos, viewport), rect.width * (0.40 + pulse * 0.05), config.PALETTE.white, 30, max(1, int(camera.zoom)))
+        return rect
 
     def _draw_core(self, surface: pygame.Surface, center: pygame.Vector2, rect: pygame.Rect, mark, zoom: float) -> None:
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.004 + self.phase)

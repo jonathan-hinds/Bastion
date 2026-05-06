@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 import pygame
 
 from bastion import config
-from bastion.engine.sprites import ROW_SOUTH, attack_directional_row, directional_row, enemy_attack_sprite_sheet, enemy_sprite_sheet
+from bastion.engine.sprites import (
+    ROW_SOUTH,
+    attack_directional_row,
+    directional_row,
+    draw_tower_sprite,
+    enemy_attack_sprite_sheet,
+    enemy_sprite_sheet,
+)
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha, draw_rect_alpha
 from bastion.engine import hover_feedback
 from bastion.game.abilities import (
@@ -51,6 +58,7 @@ FIRE_OUTER = (255, 86, 30)
 FIRE_CORE = (255, 220, 122)
 ICE_OUTER = (92, 214, 255)
 ICE_CORE = (232, 255, 255)
+TOWER_SPRITE_WORLD_SIZE = config.TILE_SIZE * 1.125
 
 
 @dataclass
@@ -877,6 +885,11 @@ class Tower:
         self.level_blink_duration = 0.24
         self.level_blink_timer = random.uniform(0.0, self.level_blink_period)
         self.level_blink_flash = 0.0
+        self.visual_target = None
+        self.visual_aim_direction = pygame.Vector2(1, 0)
+        self.shoot_flash_timer = 0.0
+        self.recoil_timer = 0.0
+        self.recoil_duration = 0.12
         self.abilities = AbilitySystemComponent(self)
         configure_tower_abilities(self)
 
@@ -1004,7 +1017,43 @@ class Tower:
             return
         self.recalculate_mod_health(game)
         self._update_level_ready_feedback(dt, game)
+        self.shoot_flash_timer = max(0.0, self.shoot_flash_timer - dt)
+        self.recoil_timer = max(0.0, self.recoil_timer - dt)
+        self._update_visual_target(game)
         self.abilities.update(dt, game)
+
+    def signal_shot(self, target=None) -> None:
+        self.visual_target = target
+        if target is not None and getattr(target, "alive", False):
+            direction = pygame.Vector2(target.pos) - self.pos
+            if direction.length_squared() > 0.01:
+                self.visual_aim_direction = direction
+        self.shoot_flash_timer = 0.055
+        self.recoil_timer = self.recoil_duration
+
+    def _update_visual_target(self, game) -> None:
+        stats = self.stats(game)
+        attack_range = float(stats.get("range", 0.0))
+        enemies = (
+            game.targetable_enemies_near(self.pos, attack_range + 36)
+            if hasattr(game, "targetable_enemies_near")
+            else game.nearby_enemies(self.pos, attack_range + 36)
+            if hasattr(game, "nearby_enemies")
+            else game.enemies
+        )
+        candidates = [
+            enemy
+            for enemy in enemies
+            if getattr(enemy, "alive", False) and enemy.pos.distance_to(self.pos) <= attack_range + getattr(enemy, "radius", 0.0)
+        ]
+        if not candidates:
+            self.visual_target = None
+            return
+        townhall_pos = game.grid.world_center(game.grid.townhall_cell)
+        self.visual_target = min(candidates, key=lambda enemy: self.abilities.target_priority_key(enemy, (enemy.pos.distance_to(townhall_pos),)))
+        direction = pygame.Vector2(self.visual_target.pos) - self.pos
+        if direction.length_squared() > 0.01:
+            self.visual_aim_direction = direction
 
     def find_target(self, enemies: list[Enemy], attack_range: float, townhall_pos: pygame.Vector2) -> Enemy | None:
         candidates = [
@@ -1037,6 +1086,11 @@ class Tower:
         scale = hover_feedback.hover_scale(hovered)
         tile = config.TILE_SIZE * camera.zoom * scale
         center = camera.world_to_screen(self.pos, viewport)
+        sprite_rect = self._draw_tower_sprite(surface, camera, viewport, scale)
+        if sprite_rect is not None:
+            self._draw_status_overlays(surface, camera, center, sprite_rect, tile, selected)
+            return
+
         rect = pygame.Rect(0, 0, int(tile * 0.82), int(tile * 0.82))
         rect.center = (center.x, center.y)
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -1075,6 +1129,61 @@ class Tower:
             for i in range(min(5, len(self.installed_mods))):
                 dot = pygame.Rect(0, 0, max(2, int(4 * camera.zoom)), max(2, int(4 * camera.zoom)))
                 dot.topright = (rect.right - 5, mod_y + i * max(4, int(6 * camera.zoom)))
+                pygame.draw.rect(surface, mark, dot)
+
+        if self.health < self.max_health:
+            bar = pygame.Rect(rect.left, rect.top - 6, rect.width, max(2, int(3 * camera.zoom)))
+            pygame.draw.rect(surface, config.PALETTE.black, bar)
+            fill_rect = bar.copy()
+            fill_rect.width = int(bar.width * max(0.0, self.health / self.max_health))
+            pygame.draw.rect(surface, config.PALETTE.white, fill_rect)
+
+    def _draw_tower_sprite(self, surface: pygame.Surface, camera, viewport: pygame.Rect, scale: float) -> pygame.Rect | None:
+        target = self.visual_target if getattr(self.visual_target, "alive", False) else None
+        recoil = self.recoil_timer / max(0.001, self.recoil_duration)
+        return draw_tower_sprite(
+            surface,
+            camera,
+            viewport,
+            self,
+            self.kind,
+            world_size=TOWER_SPRITE_WORLD_SIZE,
+            scale=scale,
+            target_pos=getattr(target, "pos", None),
+            recoil=recoil,
+            flash=self.shoot_flash_timer > 0.0,
+        )
+
+    def _draw_status_overlays(
+        self,
+        surface: pygame.Surface,
+        camera,
+        center: pygame.Vector2,
+        rect: pygame.Rect,
+        tile: float,
+        selected: bool,
+    ) -> None:
+        if self.can_level_up():
+            ready_alpha = 42
+            if self.level_blink_flash > 0:
+                ready_alpha = int(76 + 130 * (self.level_blink_flash / max(0.01, self.level_blink_duration)))
+            draw_rect_alpha(surface, rect.inflate(max(4, int(5 * camera.zoom)), max(4, int(5 * camera.zoom))), config.PALETTE.white, ready_alpha, max(1, int(2 * camera.zoom)))
+            if self.level_blink_flash > 0:
+                draw_circle_alpha(surface, center, tile * 0.70, config.PALETTE.white, min(180, ready_alpha), max(1, int(2 * camera.zoom)))
+        if selected:
+            glow = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.012)
+            draw_circle_alpha(surface, center, tile * (0.68 + glow * 0.08), config.PALETTE.white, 65, 1)
+
+        mark = config.PALETTE.black if self.shoot_flash_timer > 0 else config.PALETTE.white
+        if self.level > 1:
+            for i in range(min(5, self.level - 1)):
+                dot = pygame.Vector2(rect.left + 6 + i * 5 * camera.zoom, rect.bottom - 6)
+                pygame.draw.circle(surface, mark, dot, max(1, int(1.4 * camera.zoom)))
+        if self.installed_mods:
+            mod_y = rect.top + 6
+            for i in range(min(5, len(self.installed_mods))):
+                dot = pygame.Rect(0, 0, max(2, int(4 * camera.zoom)), max(2, int(4 * camera.zoom)))
+                dot.topright = (rect.right - 6, mod_y + i * max(4, int(6 * camera.zoom)))
                 pygame.draw.rect(surface, mark, dot)
 
         if self.health < self.max_health:

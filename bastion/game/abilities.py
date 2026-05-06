@@ -1098,6 +1098,8 @@ class TowerProjectileAttackAbility(CooldownDrivenAttack):
         self.set_cooldown(self.attack_cooldown(game))
         if hasattr(game, "play_tower_sound"):
             game.play_tower_sound(self.owner.kind)
+        if hasattr(self.owner, "signal_shot"):
+            self.owner.signal_shot(target)
 
         from bastion.game.entities import Projectile
 
