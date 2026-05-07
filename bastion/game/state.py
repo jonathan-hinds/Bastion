@@ -27,6 +27,7 @@ from bastion.engine.sprites import (
 from bastion.game.elements import ElementalEffect, damage_multiplier, healing_multiplier
 from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
+from bastion.game.enemy_defs import enemy_collision_radius
 from bastion.game.fog import FogOfWar, VisionProfile, VisionSource
 from bastion.game.grid import GameGrid
 from bastion.game.items import ActiveItemBuff, DroppedItem, ITEM_DEFINITIONS, Inventory, apply_item, random_drop_item_id, random_scroll_id
@@ -34,6 +35,7 @@ from bastion.game.research import ResearchManager
 from bastion.game.resources import GoldDeposit, MineralDeposit, MineralExtractor
 from bastion.game.round_events import RoundEventManager
 from bastion.game.terrain_shadows import TerrainShadowCalculator
+from bastion.game.tutorial import TutorialManager
 from bastion.game.tower_defs import BUILD_COSTS, MINERAL_BUILD_COSTS, TOWER_BLUEPRINTS, stats_for, tower_name, xp_needed
 from bastion.game.units import Barracks, ExpeditionCampsite, HOUSE_CAPACITY, HeroHall, House, Library, ResearchBuilding, ShieldGenerator, TROOP_DATA, Torch, TrainingGrounds, Troop
 from bastion.game.waves import WaveManager
@@ -129,8 +131,10 @@ CORE_SPRITE_WORLD_SIZE = 96.0
 
 
 class GameState:
-    def __init__(self) -> None:
+    def __init__(self, tutorial_enabled: bool = True) -> None:
         self.audio = None
+        self.tutorial_enabled = tutorial_enabled
+        self.tutorial_played_this_launch = False
         self.reset()
 
     def reset(self) -> None:
@@ -212,6 +216,10 @@ class GameState:
         self.ambient_mobs.seed_initial_camps(self)
         self.fog = FogOfWar(self.grid)
         self.update_fog(0.0, immediate=True)
+        self.tutorial = TutorialManager(self)
+        if self.tutorial_enabled and not self.tutorial_played_this_launch:
+            self.tutorial_played_this_launch = True
+            self.tutorial.start()
 
     def message(self, text: str) -> None:
         self.notice = text
@@ -475,14 +483,17 @@ class GameState:
         self.core_hit_text_timer = max(0.0, self.core_hit_text_timer - dt)
         self.loot_banner_timer = max(0.0, self.loot_banner_timer - dt)
         self.shake = max(0.0, self.shake - dt * 4.0)
-        if self.paused or self.game_over:
+        self.tutorial.update(dt)
+        if self.paused or self.game_over or self.tutorial.pauses_game:
             self.update_fog(dt)
             self._update_fx(dt)
             return
 
         self.update_item_buffs(dt)
-        self.wave_manager.update(dt, self)
-        self.ambient_mobs.update(dt, self)
+        if not self.tutorial.blocks_standard_waves:
+            self.wave_manager.update(dt, self)
+        if not self.tutorial.blocks_ambient_updates:
+            self.ambient_mobs.update(dt, self)
         for building in list(self.buildings):
             if self.has_arcane_power(building):
                 building.update(dt, self)
@@ -503,8 +514,12 @@ class GameState:
             projectile.update(dt, self)
         for enemy in list(self.enemies):
             enemy.update(dt, self)
+            if self.paused or self.game_over or self.tutorial.pauses_game:
+                break
         for projectile in list(self.enemy_projectiles):
             projectile.update(dt, self)
+            if self.paused or self.game_over or self.tutorial.pauses_game:
+                break
 
         self.projectiles = [projectile for projectile in self.projectiles if projectile.alive]
         self.enemy_projectiles = [projectile for projectile in self.enemy_projectiles if projectile.alive]
@@ -761,6 +776,9 @@ class GameState:
         self.texts = [text for text in self.texts if text.life > 0]
 
     def spawn_enemy(self, kind: str, spawn_cell: tuple[int, int], wave: int) -> Enemy:
+        radius = self._enemy_navigation_radius(kind)
+        if not self.grid.reachable_cell(spawn_cell, radius):
+            spawn_cell = self.grid.random_spawn_cell(radius)
         return self.spawn_enemy_at(kind, self.grid.world_center(spawn_cell), wave)
 
     def spawn_enemy_at(
@@ -774,19 +792,63 @@ class GameState:
         leash_radius: float | None = None,
         spawn_group: str = "wave",
     ) -> Enemy:
+        safe_pos = self._validated_enemy_world_point(kind, pos, max_radius=18)
+        safe_home = None
+        if home_pos is not None:
+            safe_home = self._validated_enemy_world_point(kind, home_pos, max_radius=18, fallback=safe_pos)
+        patrol_fallback = safe_home if safe_home is not None else safe_pos
+        safe_patrol_points = self._validated_enemy_patrol_points(kind, patrol_points, patrol_fallback)
         enemy = Enemy(
             kind,
-            pygame.Vector2(pos),
+            safe_pos,
             wave,
             behavior=behavior,
-            home_pos=home_pos,
-            patrol_points=patrol_points,
+            home_pos=safe_home,
+            patrol_points=safe_patrol_points,
             leash_radius=leash_radius,
             spawn_group=spawn_group,
         )
         self.enemies.append(enemy)
         self._spatial_ready = False
         return enemy
+
+    def _enemy_navigation_radius(self, kind: str) -> float:
+        return self.grid.navigation_radius(enemy_collision_radius(kind))
+
+    def _validated_enemy_world_point(
+        self,
+        kind: str,
+        pos: pygame.Vector2 | tuple[float, float],
+        *,
+        max_radius: int,
+        fallback: pygame.Vector2 | None = None,
+    ) -> pygame.Vector2:
+        radius = self._enemy_navigation_radius(kind)
+        safe = self.grid.nearest_reachable_world(pos, radius, max_radius=max_radius)
+        if safe is not None:
+            return pygame.Vector2(safe)
+        if fallback is not None and self.grid.reachable_world(fallback, radius):
+            return pygame.Vector2(fallback)
+        spawn_cell = self.grid.random_spawn_cell(radius)
+        return self.grid.world_center(spawn_cell)
+
+    def _validated_enemy_patrol_points(
+        self,
+        kind: str,
+        patrol_points: list[pygame.Vector2] | None,
+        fallback: pygame.Vector2,
+    ) -> list[pygame.Vector2] | None:
+        if patrol_points is None:
+            return None
+        radius = self._enemy_navigation_radius(kind)
+        safe_points: list[pygame.Vector2] = []
+        for point in patrol_points:
+            safe = self.grid.nearest_reachable_world(point, radius, max_radius=12)
+            if safe is None:
+                safe = fallback
+            if self.grid.reachable_world(safe, radius):
+                safe_points.append(pygame.Vector2(safe))
+        return safe_points or [pygame.Vector2(fallback)]
 
     def offer_round_event(self) -> bool:
         return self.round_events.maybe_offer(self)
@@ -1099,6 +1161,9 @@ class GameState:
             self.add_gold(amount, source)
         else:
             self.add_minerals(amount, source)
+        tutorial = getattr(self, "tutorial", None)
+        if tutorial is not None:
+            tutorial.notify_resource_delivered(kind, amount, source)
 
     def add_minerals(self, amount: int, source=None) -> None:
         if amount <= 0:
@@ -1353,6 +1418,9 @@ class GameState:
         target.health = max(0, target.health - amount)
         self.shake = max(self.shake, 1.0)
         self.spawn_hit(target.pos, min(10, 3 + int(amount / 5)))
+        tutorial = getattr(self, "tutorial", None)
+        if tutorial is not None:
+            tutorial.notify_core_damaged(target, amount)
         if self.core_hit_text_timer <= 0:
             self.core_hit_text_timer = 0.35
             self.texts.append(FloatingText(pygame.Vector2(target.pos), f"-{int(amount)}", 0.65))
@@ -1694,6 +1762,7 @@ class GameState:
             self.selected_troop = None
             self.selected_wall = None
             self.play_sound("menu_select")
+            self.tutorial.notify_tower_created(tower)
 
         if mode == "barracks":
             if not self.can_build_on(cell):
@@ -1714,6 +1783,7 @@ class GameState:
             self.clear_selection()
             self.selected_barracks = barracks
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(barracks)
 
         if mode == "house":
             if not self.can_build_on(cell):
@@ -1734,6 +1804,7 @@ class GameState:
             self.clear_selection()
             self.selected_house = house
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(house)
 
         if mode == "extractor":
             deposit = self.resource_for_extractor_cell(cell)
@@ -1762,6 +1833,7 @@ class GameState:
             self.selected_extractor = extractor
             self.message("EXTRACTOR ONLINE")
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(extractor)
 
         if mode == "torch":
             if not self.can_build_on(cell):
@@ -1782,6 +1854,7 @@ class GameState:
             self.clear_selection()
             self.selected_torch = torch
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(torch)
 
         if mode == "training_grounds":
             if not self.can_build_on(cell):
@@ -1802,6 +1875,7 @@ class GameState:
             self.clear_selection()
             self.selected_training_grounds = training_grounds
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(training_grounds)
 
         if mode == "expedition_campsite":
             if not self.can_build_on(cell):
@@ -1824,6 +1898,7 @@ class GameState:
             self.selected_expedition_campsite = campsite
             self.message("EXPEDITION CAMP ONLINE")
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(campsite)
 
         if mode == "hero_hall":
             if not self.can_build_on(cell):
@@ -1846,6 +1921,7 @@ class GameState:
             self.selected_hero_hall = hero_hall
             self.message("HERO HALL ONLINE")
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(hero_hall)
 
         if mode == "research":
             if not self.can_build_on(cell):
@@ -1866,6 +1942,7 @@ class GameState:
             self.clear_selection()
             self.selected_research = research
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(research)
 
         if mode == "library":
             if not self.can_build_on(cell):
@@ -1886,6 +1963,7 @@ class GameState:
             self.clear_selection()
             self.selected_library = library
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(library)
 
         if mode == "shield_generator":
             if not self.can_build_on(cell):
@@ -1907,6 +1985,7 @@ class GameState:
             self.clear_selection()
             self.selected_shield = shield
             self.play_sound("menu_select")
+            self.tutorial.notify_building_created(shield)
 
     def sell_selected(self) -> None:
         if self.selected_tower is not None:
@@ -2180,6 +2259,9 @@ class GameState:
             troop = Troop(kind, pos, pos)
             self.troops.append(troop)
             self.spawn_burst(troop.pos, 8, 46)
+            tutorial = getattr(self, "tutorial", None)
+            if tutorial is not None:
+                tutorial.notify_troop_spawned(troop)
             return True
         return False
 
@@ -2199,6 +2281,9 @@ class GameState:
                 continue
             troop = Troop(kind, pos, pos)
             self.troops.append(troop)
+            tutorial = getattr(self, "tutorial", None)
+            if tutorial is not None:
+                tutorial.notify_troop_spawned(troop)
             return True
         return False
 
@@ -2251,6 +2336,7 @@ class GameState:
             troop.set_station(center + offset, self.grid)
         self.station_mode = False
         self.message("GROUP STATION")
+        self.tutorial.notify_workers_stationed()
 
     def _formation_offsets(self, count: int, spacing: float) -> list[pygame.Vector2]:
         if count <= 1:
@@ -2642,7 +2728,9 @@ class GameState:
         self.start_night()
 
     def start_night(self) -> None:
-        if self.round_events.awaiting_choice:
+        if self.round_events.awaiting_choice or self.tutorial.blocks_standard_waves:
+            if self.tutorial.blocks_standard_waves:
+                self.message("FINISH TUTORIAL")
             return
         self.wave_manager.start_next_wave(self)
 
@@ -2848,6 +2936,7 @@ class GameState:
             draw_job()
 
         self.fog.draw(surface, camera, viewport)
+        self.tutorial.draw_world_guidance(surface, camera, viewport)
 
         surface.set_clip(previous_clip)
         pygame.draw.rect(surface, config.PALETTE.line_bright, original_viewport, 1)

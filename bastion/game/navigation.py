@@ -183,7 +183,8 @@ class PathNavigator:
 
         path = grid.find_path(self.owner.pos, goal, radius)
         if not path:
-            self.path = [grid.nearest_clear_world(goal, radius)]
+            fallback = grid.nearest_reachable_world(goal, radius) if hasattr(grid, "nearest_reachable_world") else None
+            self.path = [fallback if fallback is not None else grid.nearest_clear_world(goal, radius)]
             self.path_index = 0
             return
 

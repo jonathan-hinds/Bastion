@@ -41,7 +41,7 @@ from bastion.game.combat_stats import (
     melee_damage_from_strength,
 )
 from bastion.game.elements import ElementalEffect
-from bastion.game.enemy_defs import ENEMY_DATA, get_enemy_def
+from bastion.game.enemy_defs import ENEMY_DATA, enemy_collision_radius, get_enemy_def
 from bastion.game.navigation import PathNavigator
 from bastion.game.tower_defs import SPECIALIZATIONS, stats_for, tower_name, xp_needed
 from bastion.game.tower_mods import TOWER_MODS
@@ -206,7 +206,7 @@ class Enemy:
         self.acceleration = float(data["accel"])
         self.mass = float(data["mass"])
         self.radius = float(data["radius"])
-        self.collision_radius = min(self.radius * 0.72, config.TILE_SIZE * 0.38)
+        self.collision_radius = enemy_collision_radius(kind)
         self.reward = max(1, int(round(data["reward"] * 1.65 + wave * 0.35)))
         self.loot = dict(data.get("loot", {}))
         self.attributes: CombatAttributes | None = None
@@ -483,31 +483,7 @@ class Enemy:
         self._apply_velocity(dt, game)
 
     def _move_to_core(self, target, dt: float, game) -> None:
-        if target is not game.core_target:
-            self._move_to(target.pos, dt, game, arrival_radius=self.radius + 25)
-            return
-
-        flow = game.grid.steering_direction_from_world(self.pos)
-        if flow.length_squared() == 0 or self.navigator.stuck_time > 0.85:
-            self._move_to(target.pos, dt, game, arrival_radius=self.radius + 25)
-            return
-
-        current_speed = self.speed * self.slow_multiplier
-        max_velocity = max(self.speed * 1.35, current_speed + 130 / self.mass)
-        neighbors = (lambda: game.nearby_enemies(self.pos, 52)) if hasattr(game, "nearby_enemies") else game.enemies
-        self.navigator.steer_direction(
-            flow,
-            dt,
-            game,
-            goal=target.pos,
-            speed=current_speed,
-            acceleration=self.acceleration,
-            radius=self.collision_radius,
-            neighbors=neighbors,
-            separation_strength=0.42,
-            max_velocity=max_velocity,
-        )
-        self._apply_velocity(dt, game)
+        self._move_to(target.pos, dt, game, arrival_radius=self.radius + 25)
 
     def _steer_with_direction(self, direction: pygame.Vector2, dt: float, game) -> None:
         desired = pygame.Vector2(direction)

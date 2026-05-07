@@ -2,8 +2,9 @@ import random
 import unittest
 
 from bastion import config
+from bastion.game.enemy_defs import enemy_collision_radius
 from bastion.game.grid import GameGrid
-from bastion.game.state import GameState
+from bastion.game.state import CoreTarget, GameState
 from bastion.game.terrain import STAIR_SOUTH, TerrainMap
 from bastion.game.terrain_shadows import TerrainShadowCalculator, TerrainShadowSettings
 
@@ -254,6 +255,43 @@ class TerrainGenerationTests(unittest.TestCase):
 
         self.assertTrue(collided)
         self.assertTrue(grid.circle_clear(resolved, radius))
+
+    def test_enemy_spawn_cells_are_radius_reachable(self):
+        elevations = [[0 for _ in range(7)] for _ in range(7)]
+        for x in range(7):
+            elevations[x][0] = 1
+        grid = GameGrid(7, 7, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations))
+        radius = grid.navigation_radius(enemy_collision_radius("large"))
+
+        for _ in range(25):
+            spawn = grid.random_spawn_cell(radius)
+            self.assertTrue(grid.reachable_cell(spawn, radius))
+
+    def test_enemy_spawn_and_patrol_points_relocate_to_reachable_cells(self):
+        elevations = [[0 for _ in range(7)] for _ in range(7)]
+        elevations[3][0] = 1
+        grid = GameGrid(7, 7, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations))
+        unreachable = grid.world_center((3, 0))
+        state = GameState(tutorial_enabled=False)
+        state.grid = grid
+        state.core_target = CoreTarget(state, grid.townhall_cell, primary=True)
+        state.core_targets = [state.core_target]
+        state.enemies = []
+        radius = grid.navigation_radius(enemy_collision_radius("large"))
+
+        enemy = state.spawn_enemy_at(
+            "large",
+            unreachable,
+            1,
+            behavior="ambient",
+            home_pos=unreachable,
+            patrol_points=[unreachable],
+            spawn_group="ambient",
+        )
+
+        self.assertTrue(grid.reachable_world(enemy.pos, radius))
+        self.assertTrue(grid.reachable_world(enemy.home_pos, radius))
+        self.assertTrue(all(grid.reachable_world(point, radius) for point in enemy.patrol_points))
 
 
 class TerrainShadowTests(unittest.TestCase):

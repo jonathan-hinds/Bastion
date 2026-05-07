@@ -70,4 +70,5 @@ The Scroll Production Time research reduces Library scribing duration. Libraries
 - Ambient enemy camp templates live in `bastion/data/ambient_mobs.json`.
 - Item and scroll definitions live in `bastion/data/items.json`.
 - Tower mod definitions live in `bastion/data/tower_mods.json`.
+- Tutorial flow, dialogue, objectives, and scripted scenario settings live in `bastion/data/tutorial.json`.
 - Between-night omen events live in `bastion/data/round_events.json`. New events can be added by creating JSON entries that reference one of the registered effect types in `bastion/game/round_events.py`.

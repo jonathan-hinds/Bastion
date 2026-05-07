@@ -114,6 +114,8 @@ class HUD:
 
         status_y = config.TITLE_BAR_HEIGHT + 13
         x = max(config.TOOLBAR_WIDTH + 500, screen_rect.right - 344)
+        tutorial_paused = bool(getattr(getattr(state, "tutorial", None), "pauses_game", False))
+        effective_paused = bool(state.paused or tutorial_paused)
         for label, speed in (("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("3x", 3.0)):
             buttons.append(
                 Button(
@@ -121,18 +123,21 @@ class HUD:
                     label,
                     "speed",
                     speed,
-                    selected=(not state.paused and math.isclose(state.time_scale, speed)),
+                    selected=(not effective_paused and math.isclose(state.time_scale, speed)),
                 )
             )
             x += 53
-        buttons.append(Button(pygame.Rect(x, status_y, 38, 28), "||", "pause", selected=state.paused))
+        buttons.append(Button(pygame.Rect(x, status_y, 38, 28), "||", "pause", selected=effective_paused))
         x += 44
         buttons.append(
                 Button(
                     pygame.Rect(x, status_y, 76, 28),
                     "NIGHT",
                     "start",
-                    enabled=not state.wave_manager.active and not state.game_over and not choosing_event,
+                    enabled=not state.wave_manager.active
+                    and not state.game_over
+                    and not choosing_event
+                    and not getattr(state.tutorial, "blocks_standard_waves", False),
                 )
         )
 
@@ -801,6 +806,9 @@ class HUD:
             button.draw(surface, self.fonts["small"], self._mouse_pos())
 
         self._draw_toolbar_labels(surface, state)
+        tutorial = getattr(state, "tutorial", None)
+        if tutorial is not None:
+            tutorial.draw_toolbar_hint(surface, self.buttons, self.fonts)
 
         if state.notice_timer > 0 and state.notice:
             image = self.fonts["large"].render(state.notice, True, config.PALETTE.white)

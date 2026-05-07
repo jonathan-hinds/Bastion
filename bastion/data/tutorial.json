@@ -1,0 +1,454 @@
+{
+  "schema": 1,
+  "scenario": {
+    "starting_gold": 150,
+    "starting_minerals": 90,
+    "block_standard_waves": true,
+    "block_ambient_updates": true,
+    "gold_deposit_offset": [18, -9],
+    "gold_deposit_search_radius": 14
+  },
+  "steps": [
+    {
+      "id": "intro_grunts",
+      "phase": "Starting Base",
+      "focus": "starting_grunts",
+      "dialogue": {
+        "title": "Starting Grunts",
+        "body": [
+          "These grunts are your first worker units.",
+          "They can fight in a pinch, but their most important job is harvesting resources and keeping the base alive."
+        ]
+      }
+    },
+    {
+      "id": "intro_core",
+      "phase": "Starting Base",
+      "focus": "core",
+      "dialogue": {
+        "title": "The Core",
+        "body": [
+          "This is the Core. It powers your arcane network and anchors the run.",
+          "If every Core falls, the run is lost."
+        ]
+      }
+    },
+    {
+      "id": "intro_house",
+      "phase": "Starting Base",
+      "focus": "starting_house",
+      "dialogue": {
+        "title": "The House",
+        "body": [
+          "Houses provide troop supply.",
+          "Build more housing when you want a larger army or more workers."
+        ]
+      }
+    },
+    {
+      "id": "intro_extractor",
+      "phase": "Starting Base",
+      "focus": "starting_extractor",
+      "dialogue": {
+        "title": "Mineral Extractor",
+        "body": [
+          "This extractor claims a nearby mineral deposit.",
+          "Workers gather from claimed deposits and haul resources back to the Core."
+        ]
+      }
+    },
+    {
+      "id": "intro_minerals",
+      "phase": "Starting Base",
+      "focus": "starting_extractor",
+      "dialogue": {
+        "title": "Minerals",
+        "body": [
+          "Minerals are the secondary construction resource.",
+          "Most towers and advanced structures need minerals as well as gold."
+        ]
+      }
+    },
+    {
+      "id": "select_grunts",
+      "phase": "Workers",
+      "focus": "starting_grunts",
+      "actions": [
+        {"type": "clear_build_mode"}
+      ],
+      "dialogue": {
+        "title": "Select Workers",
+        "body": [
+          "Left click a grunt, or drag a box around several grunts, to select workers."
+        ]
+      },
+      "objective": {
+        "id": "select_grunts",
+        "title": "Select Grunts",
+        "description": "Select at least one grunt.",
+        "condition": "selected_troops",
+        "kind": "grunt",
+        "required": 1
+      }
+    },
+    {
+      "id": "assign_grunts",
+      "phase": "Workers",
+      "focus": "starting_extractor",
+      "dialogue": {
+        "title": "Assign Workers",
+        "body": [
+          "With grunts selected, right click near the extractor to set their station.",
+          "Workers stationed near a connected deposit will gather automatically."
+        ]
+      },
+      "objective": {
+        "id": "assign_workers",
+        "title": "Assign Workers",
+        "description": "Station a grunt near the starting extractor.",
+        "condition": "worker_station_near",
+        "kind": "grunt",
+        "target": "starting_extractor",
+        "radius": 145,
+        "required": 1
+      }
+    },
+    {
+      "id": "watch_mineral_delivery",
+      "phase": "Workers",
+      "focus": "starting_extractor",
+      "actions": [
+        {"type": "unpause_game"}
+      ],
+      "objective": {
+        "id": "watch_minerals",
+        "title": "Watch Minerals Move",
+        "description": "Let a grunt complete one mineral delivery.",
+        "condition": "resource_delivered",
+        "resource_kind": "mineral",
+        "required": 5
+      }
+    },
+    {
+      "id": "watch_core_damage",
+      "phase": "Defense",
+      "focus": "core",
+      "actions": [
+        {"type": "unpause_game"},
+        {"type": "spawn_tutorial_attack"},
+        {"type": "clear_build_mode"}
+      ],
+      "lock_input_during_objective": true,
+      "lock_camera_during_objective": true,
+      "objective": {
+        "id": "watch_core_damage",
+        "title": "Watch The Attack",
+        "description": "Enemies are closing on the Core.",
+        "condition": "core_damaged",
+        "required": 1
+      }
+    },
+    {
+      "id": "archer_towers",
+      "phase": "Defense",
+      "focus": "core_and_extractor",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 120, "minerals": 60},
+        {"type": "set_build_mode", "mode": "archer"}
+      ],
+      "pause_during_objective": true,
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Defend The Base",
+        "body": [
+          "The Core just took damage. Build 3 Archer Towers before the attack gets worse.",
+          "Do not protect only the Core. Resource buildings are vulnerable too, so place at least one Archer Tower near the mineral extractor."
+        ]
+      },
+      "objective": {
+        "id": "build_archer_towers",
+        "title": "Build Archer Towers",
+        "description": "Build 3 Archer Towers. At least 1 must defend the starting extractor.",
+        "condition": "towers_built",
+        "kind": "archer",
+        "required": 3,
+        "near_target": "starting_extractor",
+        "near_required": 1,
+        "near_radius": 230
+      }
+    },
+    {
+      "id": "watch_towers_clear_attack",
+      "phase": "Defense",
+      "focus": "core",
+      "actions": [
+        {"type": "unpause_game"}
+      ],
+      "objective": {
+        "id": "watch_towers_clear_attack",
+        "title": "Watch Towers Fire",
+        "description": "Let your Archer Towers destroy the tutorial enemies.",
+        "condition": "tutorial_enemies_cleared",
+        "required": 1
+      }
+    },
+    {
+      "id": "build_barracks",
+      "phase": "Production",
+      "focus": "core",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 80, "minerals": 30},
+        {"type": "set_build_mode", "mode": "barracks"}
+      ],
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Barracks",
+        "body": [
+          "A Barracks produces troops for defense, exploration, and resource work.",
+          "Build one now."
+        ]
+      },
+      "objective": {
+        "id": "build_barracks",
+        "title": "Build Barracks",
+        "description": "Construct 1 Barracks.",
+        "condition": "building_built",
+        "kind": "barracks",
+        "required": 1
+      }
+    },
+    {
+      "id": "train_grunt",
+      "phase": "Production",
+      "focus": "barracks",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 30, "minerals": 20},
+        {"type": "open_panel", "panel": "units"}
+      ],
+      "toolbar_hint": "units",
+      "dialogue": {
+        "title": "Train A Grunt",
+        "body": [
+          "Troops are trained from the Barracks.",
+          "Train 1 Grunt. For now, focus on learning production rather than every troop type."
+        ]
+      },
+      "objective": {
+        "id": "train_grunt",
+        "title": "Train 1 Grunt",
+        "description": "Queue and complete one Grunt at a Barracks.",
+        "condition": "troop_trained",
+        "kind": "grunt",
+        "required": 1
+      }
+    },
+    {
+      "id": "exploration_intro",
+      "phase": "Exploration",
+      "focus": "starting_grunts",
+      "actions": [
+        {"type": "clear_build_mode"}
+      ],
+      "dialogue": {
+        "title": "Explore",
+        "body": [
+          "The world contains discoverable resources beyond the starting base.",
+          "Gold deposits fund building, troop training, research, and long-term growth."
+        ]
+      }
+    },
+    {
+      "id": "map_intro",
+      "phase": "Exploration",
+      "focus": "tutorial_gold",
+      "actions": [
+        {"type": "open_panel", "panel": "map"},
+        {"type": "reveal_gold_hint"}
+      ],
+      "dialogue": {
+        "title": "Map And Movement",
+        "body": [
+          "Use WASD, arrow keys, middle mouse drag, or the map to move the camera.",
+          "Select troops and right click into the fog to send them exploring. The pulsing marker on the map points toward a gold deposit."
+        ]
+      },
+      "objective": {
+        "id": "discover_gold",
+        "title": "Discover Gold",
+        "description": "Move troops close enough to reveal the marked gold deposit.",
+        "condition": "gold_discovered",
+        "target": "tutorial_gold",
+        "required": 1
+      }
+    },
+    {
+      "id": "claim_gold",
+      "phase": "Exploration",
+      "focus": "tutorial_gold",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 70, "minerals": 35},
+        {"type": "set_build_mode", "mode": "extractor"}
+      ],
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Claim Gold",
+        "body": [
+          "Build an extractor on the gold deposit.",
+          "Gold extractors work like mineral extractors, but they add gold to your stockpile."
+        ]
+      },
+      "objective": {
+        "id": "claim_gold",
+        "title": "Claim Gold Deposit",
+        "description": "Build an extractor on a gold deposit.",
+        "condition": "gold_extractor_built",
+        "required": 1
+      }
+    },
+    {
+      "id": "assign_gold_worker",
+      "phase": "Exploration",
+      "focus": "gold_extractor",
+      "actions": [
+        {"type": "clear_build_mode"}
+      ],
+      "objective": {
+        "id": "assign_gold_worker",
+        "title": "Assign Gold Worker",
+        "description": "Station a grunt near the gold extractor.",
+        "condition": "gold_extractor_worker",
+        "target": "gold_extractor",
+        "kind": "grunt",
+        "radius": 150,
+        "required": 1
+      }
+    },
+    {
+      "id": "watch_gold_delivery",
+      "phase": "Exploration",
+      "focus": "gold_extractor",
+      "actions": [
+        {"type": "unpause_game"}
+      ],
+      "objective": {
+        "id": "watch_gold_delivery",
+        "title": "Watch Gold Move",
+        "description": "Let a grunt complete one gold delivery.",
+        "condition": "resource_delivered",
+        "resource_kind": "gold",
+        "required": 5
+      }
+    },
+    {
+      "id": "build_research",
+      "phase": "Advancement",
+      "focus": "core",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 95, "minerals": 45},
+        {"type": "set_build_mode", "mode": "research"}
+      ],
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Research Lab",
+        "body": [
+          "Advanced buildings unlock deeper progression once your economy is running.",
+          "Build a Research Lab."
+        ]
+      },
+      "objective": {
+        "id": "build_research",
+        "title": "Build Research Lab",
+        "description": "Construct 1 Research Lab.",
+        "condition": "building_built",
+        "kind": "research",
+        "required": 1
+      }
+    },
+    {
+      "id": "explain_research",
+      "phase": "Advancement",
+      "focus": "research",
+      "dialogue": {
+        "title": "Research",
+        "body": [
+          "Research Labs run timed upgrades.",
+          "Research can improve towers, troops, worker output, and production speed over the course of a run."
+        ]
+      }
+    },
+    {
+      "id": "build_library",
+      "phase": "Advancement",
+      "focus": "core",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 95, "minerals": 45},
+        {"type": "set_build_mode", "mode": "library"}
+      ],
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Library",
+        "body": [
+          "Libraries introduce item production.",
+          "Build a Library to unlock scrolls and begin learning the item layer."
+        ]
+      },
+      "objective": {
+        "id": "build_library",
+        "title": "Build Library",
+        "description": "Construct 1 Library.",
+        "condition": "building_built",
+        "kind": "library",
+        "required": 1
+      }
+    },
+    {
+      "id": "explain_items",
+      "phase": "Advancement",
+      "focus": "library",
+      "dialogue": {
+        "title": "Items",
+        "body": [
+          "Items are run tools that add temporary power, utility, or troop equipment.",
+          "The Library is your first entry point into that system."
+        ]
+      }
+    },
+    {
+      "id": "build_hero_hall",
+      "phase": "Advancement",
+      "focus": "core",
+      "actions": [
+        {"type": "ensure_minimum_resources", "gold": 110, "minerals": 50},
+        {"type": "set_build_mode", "mode": "hero_hall"}
+      ],
+      "toolbar_hint": "build",
+      "dialogue": {
+        "title": "Hero Hall",
+        "body": [
+          "The Hero Hall introduces hero progression and troop growth.",
+          "Build one to finish the guided setup."
+        ]
+      },
+      "objective": {
+        "id": "build_hero_hall",
+        "title": "Build Hero Hall",
+        "description": "Construct 1 Hero Hall.",
+        "condition": "building_built",
+        "kind": "hero_hall",
+        "required": 1
+      }
+    },
+    {
+      "id": "explain_hero_hall",
+      "phase": "Advancement",
+      "focus": "hero_hall",
+      "dialogue": {
+        "title": "Hero Progression",
+        "body": [
+          "Hero Halls unlock hero usage, troop leveling, and the level-up menu.",
+          "That is the guided path complete. When you press Next, this same run continues as a normal run."
+        ]
+      }
+    }
+  ]
+}

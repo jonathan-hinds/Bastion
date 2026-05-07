@@ -113,6 +113,9 @@ class MinimapPanel:
             scaled = self._scaled_surface_for(source, map_rect.size)
             surface.blit(scaled, map_rect)
         self._draw_markers(surface, map_rect, state)
+        tutorial = getattr(state, "tutorial", None)
+        if tutorial is not None:
+            tutorial.draw_minimap_guidance(surface, map_rect, grid)
         self._draw_camera_rect(surface, map_rect, grid, camera, viewport)
         pygame.draw.rect(surface, self.colors.camera if map_rect.collidepoint(mouse_pos) else self.colors.border, map_rect, 1)
 

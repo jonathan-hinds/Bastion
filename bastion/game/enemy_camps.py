@@ -835,6 +835,7 @@ class EnemyBaseCamp:
     def _build_cell_ok(self, game, cell: tuple[int, int]) -> bool:
         return (
             game.grid.buildable(cell)
+            and game.grid.reachable_cell(cell, 14)
             and not game.is_core_reserve(cell)
             and game.active_resource_at(cell) is None
         )
@@ -1012,17 +1013,26 @@ class EnemyBaseCamp:
             angle = random.random() * math.tau
             distance = random.uniform(config.TILE_SIZE * 0.8, config.TILE_SIZE * 2.7)
             pos = pygame.Vector2(anchor.x + math.cos(angle) * distance, anchor.y + math.sin(angle) * distance)
-            pos = game.grid.nearest_clear_world(pos, radius, max_radius=6)
-            if game.grid.circle_clear(pos, radius):
+            pos = game.grid.nearest_reachable_world(pos, radius, max_radius=6)
+            if pos is not None and game.grid.circle_clear(pos, radius):
                 return pos
-        return game.grid.nearest_clear_world(anchor, radius, max_radius=8)
+        fallback = game.grid.nearest_reachable_world(anchor, radius, max_radius=8)
+        if fallback is not None:
+            return fallback
+        spawn_cell = game.grid.random_spawn_cell(radius)
+        return game.grid.world_center(spawn_cell)
 
     def _patrol_points(self, game) -> list[pygame.Vector2]:
-        points = [pygame.Vector2(self.center)]
+        home = game.grid.nearest_reachable_world(self.center, 10.0, max_radius=8)
+        if home is None:
+            home = pygame.Vector2(self.center)
+        points = [pygame.Vector2(home)]
         for index in range(3):
             angle = random.random() * math.tau + index * math.tau / 3
             distance = random.uniform(70.0, 180.0)
-            points.append(game.grid.nearest_clear_world(self.center + pygame.Vector2(math.cos(angle), math.sin(angle)) * distance, 10.0, max_radius=6))
+            candidate = self.center + pygame.Vector2(math.cos(angle), math.sin(angle)) * distance
+            point = game.grid.nearest_reachable_world(candidate, 10.0, max_radius=6)
+            points.append(pygame.Vector2(point if point is not None else home))
         return points
 
     def _unit_capacity(self) -> int:

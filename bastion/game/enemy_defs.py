@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from bastion import config
 from bastion.game.elements import normalize_resistances
 
 
@@ -78,6 +79,11 @@ def get_enemy_def(kind: str) -> dict[str, Any]:
     except KeyError as exc:
         known = ", ".join(sorted(ENEMY_DATA))
         raise KeyError(f"Unknown enemy kind '{kind}'. Known kinds: {known}") from exc
+
+
+def enemy_collision_radius(kind: str) -> float:
+    data = get_enemy_def(kind)
+    return min(float(data["radius"]) * 0.72, config.TILE_SIZE * 0.38)
 
 
 def enemy_ids_by_role(role: str, *, include_bosses: bool = False) -> list[str]:

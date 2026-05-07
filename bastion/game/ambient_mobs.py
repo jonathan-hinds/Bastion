@@ -242,6 +242,8 @@ class AmbientMobManager:
                 continue
             if not self.grid.circle_clear(center, 18):
                 continue
+            if not self.grid.reachable_world(center, 18):
+                continue
             return center
         return None
 
@@ -250,21 +252,29 @@ class AmbientMobManager:
             angle = random.random() * math.tau
             distance = radius * math.sqrt(random.random())
             pos = pygame.Vector2(center.x + math.cos(angle) * distance, center.y + math.sin(angle) * distance)
-            pos = self.grid.nearest_clear_world(pos, 14, max_radius=6)
-            if not self.grid.circle_clear(pos, 14):
+            pos = self.grid.nearest_reachable_world(pos, 14, max_radius=6)
+            if pos is None or not self.grid.circle_clear(pos, 14):
                 continue
             if any(troop.alive and troop.pos.distance_to(pos) < troop.radius + 22 for troop in getattr(game, "troops", [])):
                 continue
             return pos
-        return self.grid.nearest_clear_world(center, 14, max_radius=8)
+        fallback = self.grid.nearest_reachable_world(center, 14, max_radius=8)
+        if fallback is not None:
+            return fallback
+        spawn_cell = self.grid.random_spawn_cell(14)
+        return self.grid.world_center(spawn_cell)
 
     def patrol_points(self, game, center: pygame.Vector2, radius: float) -> list[pygame.Vector2]:
-        points = [pygame.Vector2(center)]
+        home = self.grid.nearest_reachable_world(center, 14, max_radius=8)
+        if home is None:
+            home = pygame.Vector2(center)
+        points = [pygame.Vector2(home)]
         for index in range(3):
             angle = random.random() * math.tau + index * math.tau / 3
             distance = random.uniform(radius * 0.45, radius)
             candidate = pygame.Vector2(center.x + math.cos(angle) * distance, center.y + math.sin(angle) * distance)
-            points.append(self.grid.nearest_clear_world(candidate, 14, max_radius=8))
+            point = self.grid.nearest_reachable_world(candidate, 14, max_radius=8)
+            points.append(pygame.Vector2(point if point is not None else home))
         return points
 
     def _far_from_cores(self, game, center: pygame.Vector2, min_distance: float) -> bool:

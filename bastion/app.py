@@ -91,6 +91,8 @@ class BastionApp:
                 raw_dt = self.clock.tick(config.FPS) / 1000.0
                 self.handle_events()
                 self.consume_camera_focus()
+                self.consume_hud_panel_requests()
+                self.camera.update(raw_dt, self.viewport)
                 self.update_hover_audio()
                 self.audio.update_music()
                 if not self.pause_menu.open and self.state.expedition_run is None:
@@ -122,13 +124,17 @@ class BastionApp:
                 else:
                     self.running = False
                     self.hud.close_all_windows()
-            elif self.hud.handle_external_event(event, self.state):
+            elif not self.state.tutorial.blocks_player_input and self.hud.handle_external_event(event, self.state):
                 continue
             elif event.type == pygame.VIDEORESIZE:
                 self.screen = pygame.display.set_mode((max(960, event.w), max(600, event.h)), self.display_flags)
                 self.window = self.get_sdl_window()
                 self.hud.set_parent_window(self.get_native_window_id())
                 self.camera.clamp_to_world(self.viewport)
+            elif self.state.tutorial.handle_event(event, self.screen_rect, viewport):
+                continue
+            elif self.state.tutorial.blocks_player_input and event.type in (pygame.KEYDOWN, pygame.KEYUP, pygame.MOUSEWHEEL):
+                continue
             elif event.type == pygame.KEYDOWN:
                 self.handle_keydown(event)
             elif self.pause_menu.open:
@@ -141,7 +147,7 @@ class BastionApp:
                 if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
                 mouse = pygame.mouse.get_pos()
-                if viewport.collidepoint(mouse):
+                if viewport.collidepoint(mouse) and not self.state.tutorial.locks_camera:
                     self.camera.zoom_at(1.1 if event.y > 0 else 0.9, mouse, viewport)
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1 and event.pos[1] < config.TITLE_BAR_HEIGHT:
@@ -156,8 +162,9 @@ class BastionApp:
                         continue
                 if viewport.collidepoint(event.pos):
                     if event.button == 2:
-                        self.dragging = True
-                        self.last_mouse = pygame.Vector2(event.pos)
+                        if not self.state.tutorial.locks_camera:
+                            self.dragging = True
+                            self.last_mouse = pygame.Vector2(event.pos)
                     elif event.button == 1:
                         if self.state.build_mode or self.state.station_mode:
                             world = self.camera.screen_to_world(event.pos, viewport)
@@ -187,7 +194,8 @@ class BastionApp:
                     continue
                 if self.dragging:
                     current = pygame.Vector2(event.pos)
-                    self.camera.pan_screen_delta(current - self.last_mouse, viewport)
+                    if not self.state.tutorial.locks_camera:
+                        self.camera.pan_screen_delta(current - self.last_mouse, viewport)
                     self.last_mouse = current
                 elif self.left_selecting:
                     self.select_current = pygame.Vector2(event.pos)
@@ -395,12 +403,30 @@ class BastionApp:
         self.hud.dialog_scroll_max = 0.0
         self.state.play_sound("menu_select")
 
+    def open_hud_panel(self, panel: str) -> None:
+        if panel == "units":
+            self.hud.units_panel_barracks = self.state.selected_barracks
+        elif panel == "research":
+            self.hud.research_panel_lab = self.state.selected_research
+        if self.hud._using_external_windows() and panel in self.hud.panel_windows:
+            self.hud.open_panel_window(panel)
+        self.hud.active_panel = panel
+        self.hud.dialog_scroll = 0.0
+        self.hud.dialog_scroll_max = 0.0
+
+    def consume_hud_panel_requests(self) -> None:
+        panel = self.state.tutorial.consume_hud_panel_request()
+        if panel:
+            self.open_hud_panel(panel)
+
     def consume_camera_focus(self) -> None:
         focus = self.state.consume_camera_focus()
         if focus is not None:
-            self.camera.center_on(focus, self.viewport)
+            self.camera.focus_on(focus, self.viewport)
 
     def handle_keyboard_pan(self, dt: float) -> None:
+        if self.state.tutorial.locks_camera:
+            return
         keys = pygame.key.get_pressed()
         direction = pygame.Vector2(0, 0)
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
@@ -424,10 +450,12 @@ class BastionApp:
         if self.pause_menu.open:
             pass
         elif target is None:
-            target = self.title_hover_target_at(pos)
-        if not self.pause_menu.open and target is None:
+            target = self.state.tutorial.hover_target_at(pos)
+            if target is None:
+                target = self.title_hover_target_at(pos)
+        if not self.pause_menu.open and not self.state.tutorial.blocks_player_input and target is None:
             target = self.hud.hover_target_at(pos, viewport, self.state)
-        if not self.pause_menu.open and target is None:
+        if not self.pause_menu.open and not self.state.tutorial.blocks_player_input and target is None:
             target = self.world_hover_target_at(pos, viewport)
         if target != self.hover_audio_target:
             if target is not None:
@@ -473,6 +501,7 @@ class BastionApp:
             self.state.draw_world(self.screen, self.camera, viewport, self.fonts, pygame.mouse.get_pos(), self.hover_audio_target)
             self.draw_selection_box(viewport)
         self.hud.draw(self.screen, self.screen_rect, viewport, self.state, self.camera)
+        self.state.tutorial.draw_overlay(self.screen, self.screen_rect, viewport, self.fonts)
         self.pause_menu.draw(self.screen, self.screen_rect, self.audio)
         pygame.display.flip()
 

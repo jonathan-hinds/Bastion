@@ -45,6 +45,8 @@ class GameGrid:
         self._path_cache: dict[tuple[tuple[int, int], tuple[int, int], int], list[tuple[float, float]]] = {}
         self._cell_clear_cache: dict[tuple[tuple[int, int], int], bool] = {}
         self._neighbor_cache: dict[tuple[tuple[int, int], int], list[tuple[tuple[int, int], float]]] = {}
+        self._radius_distance_cache: dict[int, list[list[int | None]]] = {}
+        self._radius_flow_cache: dict[int, tuple[list[list[pygame.Vector2]], list[list[pygame.Vector2 | None]]]] = {}
         self._base_component_ids: list[list[int]] = []
         self.recompute_flow()
 
@@ -64,10 +66,14 @@ class GameGrid:
             yield (0, y)
             yield (self.width - 1, y)
 
-    def random_spawn_cell(self) -> tuple[int, int]:
-        reachable = [cell for cell in self.spawn_cells if self.passable(cell) and self.distance_at(cell) is not None]
+    def random_spawn_cell(self, radius: float = 0.0) -> tuple[int, int]:
+        query_radius = self._radius_from_key(self._radius_key(radius))
+        reachable = [cell for cell in self.spawn_cells if self.reachable_cell(cell, query_radius)]
         if reachable:
             return random.choice(reachable)
+        fallback = self.random_reachable_cell(query_radius)
+        if fallback is not None:
+            return fallback
         edge = random.randrange(4)
         if edge == 0:
             return random.randrange(self.width), 0
@@ -139,6 +145,8 @@ class GameGrid:
         self._path_cache.clear()
         self._cell_clear_cache.clear()
         self._neighbor_cache.clear()
+        self._radius_distance_cache.clear()
+        self._radius_flow_cache.clear()
 
     def all_spawns_reachable(self) -> bool:
         for sx, sy in self.spawn_cells:
@@ -189,6 +197,53 @@ class GameGrid:
             return None
         return self.distances[cell[0]][cell[1]]
 
+    def navigation_distance_at(self, cell: tuple[int, int], radius: float = 0.0) -> int | None:
+        if not self.in_bounds(cell):
+            return None
+        radius_key = self._radius_key(radius)
+        if radius_key <= 0:
+            return self.distance_at(cell)
+        distances = self._radius_distances_for_key(radius_key)
+        return distances[cell[0]][cell[1]]
+
+    def reachable_cell(self, cell: tuple[int, int], radius: float = 0.0) -> bool:
+        if not self.in_bounds(cell):
+            return False
+        radius_key = self._radius_key(radius)
+        query_radius = self._radius_from_key(radius_key)
+        if not self._cell_clear_for_radius(cell, query_radius):
+            return False
+        return self.navigation_distance_at(cell, query_radius) is not None
+
+    def reachable_world(self, world: pygame.Vector2 | tuple[float, float], radius: float = 0.0) -> bool:
+        point = pygame.Vector2(world)
+        radius_key = self._radius_key(radius)
+        query_radius = self._radius_from_key(radius_key)
+        return self.circle_clear(point, query_radius) and self.reachable_cell(self.cell_from_world(point), query_radius)
+
+    def random_reachable_cell(self, radius: float = 0.0) -> tuple[int, int] | None:
+        radius_key = self._radius_key(radius)
+        query_radius = self._radius_from_key(radius_key)
+        if radius_key <= 0:
+            cells = [
+                (x, y)
+                for x in range(self.width)
+                for y in range(self.height)
+                if self.passable((x, y)) and self.distance_at((x, y)) is not None
+            ]
+        else:
+            distances = self._radius_distances_for_key(radius_key)
+            cells = [
+                (x, y)
+                for x in range(self.width)
+                for y in range(self.height)
+                if distances[x][y] is not None and self._cell_clear_for_radius((x, y), query_radius)
+            ]
+        if not cells:
+            return None
+        non_reserve = [cell for cell in cells if not self.is_townhall_reserve(cell)]
+        return random.choice(non_reserve or cells)
+
     def nearest_passable_cell(
         self,
         cell: tuple[int, int],
@@ -234,6 +289,43 @@ class GameGrid:
         if cell is None:
             return self.world_center(self.townhall_cell)
         return self.world_center(cell)
+
+    def nearest_reachable_world(
+        self,
+        world: pygame.Vector2 | tuple[float, float],
+        radius: float,
+        max_radius: int = 8,
+    ) -> pygame.Vector2 | None:
+        point = pygame.Vector2(world)
+        radius_key = self._radius_key(radius)
+        query_radius = self._radius_from_key(radius_key)
+        if self.reachable_world(point, query_radius):
+            return point
+
+        sampled = self._nearest_clear_point(point, query_radius, max_distance=max_radius * self.tile_size)
+        if sampled is not None and self.reachable_cell(self.cell_from_world(sampled), query_radius):
+            return sampled
+
+        origin = self._clamp_cell(self.cell_from_world(point))
+        ox, oy = origin
+        best: tuple[int, int] | None = None
+        best_score = float("inf")
+        for ring in range(0, max_radius + 1):
+            for x in range(ox - ring, ox + ring + 1):
+                for y in range(oy - ring, oy + ring + 1):
+                    if max(abs(x - ox), abs(y - oy)) != ring:
+                        continue
+                    candidate = (x, y)
+                    if not self.reachable_cell(candidate, query_radius):
+                        continue
+                    score = (x - origin[0]) ** 2 + (y - origin[1]) ** 2
+                    if score < best_score:
+                        best = candidate
+                        best_score = score
+            if best is not None:
+                return self.world_center(best)
+
+        return None
 
     def navigation_radius(self, radius: float) -> float:
         """Radius used for planning, inflated slightly like an agent navmesh."""
@@ -388,11 +480,29 @@ class GameGrid:
             return self.world_center(cell)
         return self.world_center(best)
 
-    def steering_direction_from_world(self, world: pygame.Vector2) -> pygame.Vector2:
+    def steering_direction_from_world(self, world: pygame.Vector2, radius: float = 0.0) -> pygame.Vector2:
         point = pygame.Vector2(world)
         cell = self.cell_from_world(point)
         if not self.in_bounds(cell):
             return self._safe_direction(self.world_center(self.townhall_cell) - point)
+
+        radius_key = self._radius_key(radius)
+        if radius_key > 0:
+            vectors, targets = self._radius_flow_for_key(radius_key)
+            cx, cy = cell
+            current = self.navigation_distance_at(cell, self._radius_from_key(radius_key))
+            if current == 0:
+                return self._safe_direction(self.world_center(self.townhall_cell) - point)
+            if current is not None:
+                flow = pygame.Vector2(vectors[cx][cy])
+                target = targets[cx][cy]
+                if target is not None:
+                    target_pull = target - point
+                    if target_pull.length_squared() > 0:
+                        flow += target_pull.normalize() * 0.35
+                if flow.length_squared() > 0:
+                    return flow.normalize()
+            return pygame.Vector2(0, 0)
 
         cx, cy = cell
         current = self.distance_at(cell)
@@ -693,6 +803,84 @@ class GameGrid:
                 visited.add(neighbor)
                 queue.append(neighbor)
         return all(cell in visited for cell in self.spawn_cells)
+
+    def _radius_distances_for_key(self, radius_key: int) -> list[list[int | None]]:
+        cached = self._radius_distance_cache.get(radius_key)
+        if cached is not None:
+            return cached
+
+        query_radius = self._radius_from_key(radius_key)
+        distances: list[list[int | None]] = [[None for _ in range(self.height)] for _ in range(self.width)]
+        start = self.nearest_passable_cell(self.townhall_cell, query_radius, max_radius=4)
+        if start is None:
+            self._radius_distance_cache[radius_key] = distances
+            return distances
+
+        queue: deque[tuple[int, int]] = deque([start])
+        distances[start[0]][start[1]] = 0
+        while queue:
+            cell = queue.popleft()
+            current = distances[cell[0]][cell[1]]
+            for neighbor, _step_cost in self._navigation_neighbors(cell, query_radius):
+                nx, ny = neighbor
+                if distances[nx][ny] is not None:
+                    continue
+                distances[nx][ny] = int(current or 0) + 1
+                queue.append(neighbor)
+
+        self._radius_distance_cache[radius_key] = distances
+        return distances
+
+    def _radius_flow_for_key(
+        self,
+        radius_key: int,
+    ) -> tuple[list[list[pygame.Vector2]], list[list[pygame.Vector2 | None]]]:
+        cached = self._radius_flow_cache.get(radius_key)
+        if cached is not None:
+            return cached
+
+        distances = self._radius_distances_for_key(radius_key)
+        vectors: list[list[pygame.Vector2]] = [[pygame.Vector2(0, 0) for _ in range(self.height)] for _ in range(self.width)]
+        targets: list[list[pygame.Vector2 | None]] = [[None for _ in range(self.height)] for _ in range(self.width)]
+        for cx in range(self.width):
+            for cy in range(self.height):
+                current = distances[cx][cy]
+                if current in (None, 0):
+                    continue
+                cell = (cx, cy)
+                point = self.world_center(cell)
+                flow = pygame.Vector2(0, 0)
+                best_cell = cell
+                best_distance = current
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        neighbor = (cx + dx, cy + dy)
+                        if not self.in_bounds(neighbor):
+                            continue
+                        distance = distances[neighbor[0]][neighbor[1]]
+                        if distance is None:
+                            continue
+                        if dx != 0 and dy != 0 and not self._can_step_diagonal(cell, dx, dy):
+                            continue
+                        if distance < best_distance:
+                            best_cell = neighbor
+                            best_distance = distance
+                        progress = float(current - distance)
+                        if progress < -0.25:
+                            continue
+                        weight = max(0.08, progress + 0.15)
+                        direction = self.world_center(neighbor) - point
+                        if direction.length_squared() > 0:
+                            flow += direction.normalize() * weight
+                if flow.length_squared() > 0:
+                    vectors[cx][cy] = flow.normalize()
+                if best_cell != cell:
+                    targets[cx][cy] = self.world_center(best_cell)
+
+        self._radius_flow_cache[radius_key] = (vectors, targets)
+        return vectors, targets
 
     def _recompute_flow_vectors(self) -> None:
         vectors: list[list[pygame.Vector2]] = [[pygame.Vector2(0, 0) for _ in range(self.height)] for _ in range(self.width)]
