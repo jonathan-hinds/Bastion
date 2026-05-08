@@ -18,6 +18,7 @@ from bastion.terrain_tiles import (
 STAIR_SOUTH = "stair_south"
 
 CARDINAL_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+StairRun = tuple[tuple[int, int], ...]
 
 
 class TerrainRules:
@@ -89,7 +90,7 @@ class TerrainMap:
     ) -> "TerrainMap":
         width = len(elevations)
         height = len(elevations[0]) if width else 0
-        features = features or {}
+        features = cls._normalized_features(elevations, features or {}, config.TERRAIN_STAIR_WIDTH)
         cells = [
             [
                 TerrainCell(elevation=max(0, int(elevations[x][y])), feature=features.get((x, y)))
@@ -100,6 +101,63 @@ class TerrainMap:
         terrain = cls(width, height, cells, seed=seed, rules=rules)
         terrain.reclassify()
         return terrain
+
+    @staticmethod
+    def _normalized_features(
+        elevations: list[list[int]],
+        features: dict[tuple[int, int], str],
+        stair_width: int,
+    ) -> dict[tuple[int, int], str]:
+        normalized = {cell: feature for cell, feature in features.items() if feature != STAIR_SOUTH}
+        assigned_stairs: set[tuple[int, int]] = set()
+        width = max(1, int(stair_width))
+        for cell, feature in sorted(features.items()):
+            if feature != STAIR_SOUTH or cell in assigned_stairs:
+                continue
+            stair_run = TerrainMap._stair_run_containing_cell(elevations, cell, width)
+            if stair_run is None:
+                continue
+            for stair_cell in stair_run:
+                normalized[stair_cell] = STAIR_SOUTH
+                assigned_stairs.add(stair_cell)
+        return normalized
+
+    @staticmethod
+    def _stair_run_containing_cell(
+        elevations: list[list[int]],
+        cell: tuple[int, int],
+        stair_width: int,
+    ) -> StairRun | None:
+        x, y = cell
+        width = max(1, int(stair_width))
+        for offset in range(width):
+            stair_run = TerrainMap._stair_run_cells((x - offset, y), width)
+            if TerrainMap._valid_south_stair_run(elevations, stair_run):
+                return stair_run
+        return None
+
+    @staticmethod
+    def _stair_run_cells(anchor: tuple[int, int], stair_width: int) -> StairRun:
+        x, y = anchor
+        return tuple((x + offset, y) for offset in range(max(1, int(stair_width))))
+
+    @staticmethod
+    def _valid_south_stair_run(elevations: list[list[int]], stair_run: StairRun) -> bool:
+        width = len(elevations)
+        height = len(elevations[0]) if width else 0
+        lower_level: int | None = None
+        for x, y in stair_run:
+            if not (0 <= x < width and 0 < y < height):
+                return False
+            lower = int(elevations[x][y])
+            upper = int(elevations[x][y - 1])
+            if upper - lower != 1:
+                return False
+            if lower_level is None:
+                lower_level = lower
+            elif lower != lower_level:
+                return False
+        return bool(stair_run)
 
     def in_bounds(self, cell: tuple[int, int]) -> bool:
         x, y = cell
@@ -414,6 +472,7 @@ class TerrainGeneratorSettings:
     starting_flat_radius: int = config.TERRAIN_STARTING_FLAT_RADIUS
     low_border: int = config.TERRAIN_LOW_BORDER
     stair_spacing: int = config.TERRAIN_STAIR_SPACING
+    stair_width: int = config.TERRAIN_STAIR_WIDTH
     attempts: int = 8
 
 
@@ -571,8 +630,9 @@ class ProceduralTerrainGenerator:
                 if not candidates:
                     continue
                 selected = self._select_stairs(candidates, component, townhall_cell)
-                for cell in selected:
-                    features[cell] = STAIR_SOUTH
+                for stair_run in selected:
+                    for cell in stair_run:
+                        features[cell] = STAIR_SOUTH
         return features
 
     def _components_at_or_above(self, elevations: list[list[int]], level: int) -> list[set[tuple[int, int]]]:
@@ -609,21 +669,15 @@ class ProceduralTerrainGenerator:
         component: set[tuple[int, int]],
         level: int,
         townhall_cell: tuple[int, int],
-    ) -> list[tuple[int, int]]:
-        width = len(elevations)
-        height = len(elevations[0])
-        cx, cy = townhall_cell
-        candidates: set[tuple[int, int]] = set()
+    ) -> list[StairRun]:
+        candidates: set[StairRun] = set()
+        stair_width = max(1, int(self.settings.stair_width))
         for x, y in component:
-            lower = (x, y + 1)
-            lx, ly = lower
-            if not (0 <= lx < width and 0 <= ly < height):
-                continue
-            if elevations[lx][ly] != level - 1:
-                continue
-            if max(abs(lx - cx), abs(ly - cy)) <= self.settings.starting_flat_radius - 1:
-                continue
-            candidates.add(lower)
+            lower_y = y + 1
+            for anchor_x in range(x - stair_width + 1, x + 1):
+                stair_run = TerrainMap._stair_run_cells((anchor_x, lower_y), stair_width)
+                if self._valid_stair_candidate_run(elevations, stair_run, component, level, townhall_cell):
+                    candidates.add(stair_run)
         return sorted(candidates)
 
     def _carve_south_landing(
@@ -632,40 +686,112 @@ class ProceduralTerrainGenerator:
         component: set[tuple[int, int]],
         level: int,
         townhall_cell: tuple[int, int],
-    ) -> tuple[int, int] | None:
-        width = len(elevations)
-        height = len(elevations[0])
+    ) -> StairRun | None:
         cx, cy = townhall_cell
+        stair_width = max(1, int(self.settings.stair_width))
         for high in sorted(component, key=lambda item: (-item[1], abs(item[0] - cx))):
-            lower = (high[0], high[1] + 1)
-            lx, ly = lower
-            if not (self.settings.low_border <= lx < width - self.settings.low_border and self.settings.low_border <= ly < height - self.settings.low_border):
-                continue
-            if max(abs(lx - cx), abs(ly - cy)) <= self.settings.starting_flat_radius - 1:
-                continue
-            elevations[lx][ly] = level - 1
-            return lower
+            lower_y = high[1] + 1
+            stair_runs = [
+                TerrainMap._stair_run_cells((anchor_x, lower_y), stair_width)
+                for anchor_x in range(high[0] - stair_width + 1, high[0] + 1)
+            ]
+            stair_runs.sort(key=lambda stair_run: (self._stair_run_distance_to_cell(stair_run, townhall_cell), stair_run))
+            for stair_run in stair_runs:
+                if not self._carvable_stair_run(elevations, stair_run, component, townhall_cell):
+                    continue
+                for lx, ly in stair_run:
+                    elevations[lx][ly] = level - 1
+                return stair_run
         return None
+
+    def _valid_stair_candidate_run(
+        self,
+        elevations: list[list[int]],
+        stair_run: StairRun,
+        component: set[tuple[int, int]],
+        level: int,
+        townhall_cell: tuple[int, int],
+    ) -> bool:
+        width = len(elevations)
+        height = len(elevations[0]) if width else 0
+        cx, cy = townhall_cell
+        for lx, ly in stair_run:
+            if not (0 <= lx < width and 0 <= ly < height):
+                return False
+            if (lx, ly - 1) not in component:
+                return False
+            if elevations[lx][ly] != level - 1:
+                return False
+            if max(abs(lx - cx), abs(ly - cy)) <= self.settings.starting_flat_radius - 1:
+                return False
+        return True
+
+    def _carvable_stair_run(
+        self,
+        elevations: list[list[int]],
+        stair_run: StairRun,
+        component: set[tuple[int, int]],
+        townhall_cell: tuple[int, int],
+    ) -> bool:
+        width = len(elevations)
+        height = len(elevations[0]) if width else 0
+        cx, cy = townhall_cell
+        for lx, ly in stair_run:
+            if not (self.settings.low_border <= lx < width - self.settings.low_border):
+                return False
+            if not (self.settings.low_border <= ly < height - self.settings.low_border):
+                return False
+            if (lx, ly - 1) not in component:
+                return False
+            if max(abs(lx - cx), abs(ly - cy)) <= self.settings.starting_flat_radius - 1:
+                return False
+        return True
 
     def _select_stairs(
         self,
-        candidates: list[tuple[int, int]],
+        candidates: list[StairRun],
         component: set[tuple[int, int]],
         townhall_cell: tuple[int, int],
-    ) -> list[tuple[int, int]]:
+    ) -> list[StairRun]:
         count = max(1, min(4, len(component) // max(1, self.settings.stair_spacing * self.settings.stair_spacing) + 1))
-        selected: list[tuple[int, int]] = []
+        selected: list[StairRun] = []
         remaining = list(dict.fromkeys(candidates))
         if not remaining:
             return selected
-        cx, cy = townhall_cell
-        first = min(remaining, key=lambda item: abs(item[0] - cx) + abs(item[1] - cy))
+        first = min(remaining, key=lambda stair_run: self._stair_run_distance_to_cell(stair_run, townhall_cell))
         selected.append(first)
-        remaining.remove(first)
+        remaining = self._without_overlapping_stair_runs(remaining, first)
         while remaining and len(selected) < count:
-            selected.append(max(remaining, key=lambda item: min(abs(item[0] - sx) + abs(item[1] - sy) for sx, sy in selected)))
-            remaining.remove(selected[-1])
+            next_run = max(
+                remaining,
+                key=lambda stair_run: min(
+                    self._stair_run_distance(stair_run, selected_run)
+                    for selected_run in selected
+                ),
+            )
+            selected.append(next_run)
+            remaining = self._without_overlapping_stair_runs(remaining, next_run)
         return selected
+
+    def _without_overlapping_stair_runs(self, candidates: list[StairRun], selected: StairRun) -> list[StairRun]:
+        selected_cells = set(selected)
+        return [stair_run for stair_run in candidates if selected_cells.isdisjoint(stair_run)]
+
+    def _stair_run_distance_to_cell(self, stair_run: StairRun, cell: tuple[int, int]) -> float:
+        cx, cy = cell
+        run_x, run_y = self._stair_run_center(stair_run)
+        return abs(run_x - cx) + abs(run_y - cy)
+
+    def _stair_run_distance(self, a: StairRun, b: StairRun) -> float:
+        ax, ay = self._stair_run_center(a)
+        bx, by = self._stair_run_center(b)
+        return abs(ax - bx) + abs(ay - by)
+
+    def _stair_run_center(self, stair_run: StairRun) -> tuple[float, float]:
+        return (
+            sum(x for x, _y in stair_run) / len(stair_run),
+            sum(y for _x, y in stair_run) / len(stair_run),
+        )
 
     def _all_spawns_reachable(self, terrain: TerrainMap, townhall_cell: tuple[int, int]) -> bool:
         if not terrain.is_walkable(townhall_cell):

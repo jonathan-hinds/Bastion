@@ -19,6 +19,14 @@ class TerrainGenerationTests(unittest.TestCase):
             with self.subTest(cell=cell):
                 self.assertEqual(terrain.cell(cell).tile_name, tile_name)
 
+    def assert_south_stair_pair(self, terrain: TerrainMap, left_cell: tuple[int, int]) -> None:
+        x, y = left_cell
+        for cell in (left_cell, (x + 1, y)):
+            with self.subTest(stair_cell=cell):
+                self.assertEqual(terrain.cell(cell).feature, STAIR_SOUTH)
+                self.assertEqual(terrain.cell(cell).feature_tile_name, "stairs_south")
+                self.assertEqual(terrain.elevation_at((cell[0], cell[1] - 1)), terrain.elevation_at(cell) + 1)
+
     def test_outer_platform_tiles_follow_main_9_rules(self):
         high_cells = {(x, y) for x in range(1, 4) for y in range(1, 4)}
         terrain = TerrainMap.from_elevations(_elevations(5, 5, high_cells))
@@ -100,11 +108,11 @@ class TerrainGenerationTests(unittest.TestCase):
         self.assertEqual(terrain.cell((2, 2)).tile_name, "single_path_end_west")
         self.assertEqual(terrain.cell((3, 2)).tile_name, "single_path_end_east")
 
-    def test_stair_feature_uses_stair_sprite_not_south_end_cap(self):
-        terrain = TerrainMap.from_elevations(_elevations(5, 5, {(2, 2)}), {(2, 3): STAIR_SOUTH})
+    def test_stair_feature_uses_two_tile_stair_run_not_south_end_cap(self):
+        terrain = TerrainMap.from_elevations(_elevations(5, 5, {(2, 2), (3, 2)}), {(2, 3): STAIR_SOUTH})
 
-        self.assertEqual(terrain.cell((2, 2)).tile_name, "single_platform_dot")
-        self.assertEqual(terrain.cell((2, 3)).feature_tile_name, "stairs_south")
+        self.assertEqual(terrain.cell((2, 2)).tile_name, "single_path_end_west")
+        self.assert_south_stair_pair(terrain, (2, 3))
 
     def test_cliff_faces_render_on_lower_side_of_south_facing_ledge(self):
         high_cells = {(x, y) for x in range(1, 4) for y in range(1, 4)}
@@ -124,7 +132,7 @@ class TerrainGenerationTests(unittest.TestCase):
         self.assertEqual(terrain.cell((1, 2)).cliff_tile_name, "cliff_bottom_left")
         self.assertEqual(terrain.cell((2, 2)).cliff_tile_name, "cliff_bottom_right")
         self.assertIsNone(terrain.cell((3, 2)).cliff_tile_name)
-        self.assertEqual(terrain.cell((4, 2)).cliff_tile_name, "cliff_bottom_left")
+        self.assertIsNone(terrain.cell((4, 2)).cliff_tile_name)
         self.assertEqual(terrain.cell((5, 2)).cliff_tile_name, "cliff_bottom_right")
 
     def test_unit_radius_can_overlap_stair_corners_but_not_plain_cliffs(self):
@@ -180,9 +188,44 @@ class TerrainGenerationTests(unittest.TestCase):
             for y in range(grid.height)
             if grid.terrain.cell((x, y)).feature == STAIR_SOUTH
         )
+        stair_cells = [
+            (x, y)
+            for x in range(grid.width)
+            for y in range(grid.height)
+            if grid.terrain.cell((x, y)).feature == STAIR_SOUTH
+        ]
 
         self.assertGreater(max(elevations), 0)
         self.assertGreater(stair_count, 0)
+        self.assertEqual(stair_count % 2, 0)
+        for x, y in stair_cells:
+            has_partner = (
+                x > 0
+                and grid.terrain.cell((x - 1, y)).feature == STAIR_SOUTH
+                and grid.terrain.elevation_at((x - 1, y)) == grid.terrain.elevation_at((x, y))
+                and grid.terrain.elevation_at((x - 1, y - 1)) == grid.terrain.elevation_at((x, y - 1))
+            ) or (
+                x + 1 < grid.width
+                and grid.terrain.cell((x + 1, y)).feature == STAIR_SOUTH
+                and grid.terrain.elevation_at((x + 1, y)) == grid.terrain.elevation_at((x, y))
+                and grid.terrain.elevation_at((x + 1, y - 1)) == grid.terrain.elevation_at((x, y - 1))
+            )
+            self.assertTrue(has_partner)
+        small_radius = grid.navigation_radius(enemy_collision_radius("small"))
+        boss_radius = grid.navigation_radius(enemy_collision_radius("boss_fire"))
+        small_reachable = {
+            (x, y)
+            for x in range(grid.width)
+            for y in range(grid.height)
+            if grid.reachable_cell((x, y), small_radius)
+        }
+        boss_reachable = {
+            (x, y)
+            for x in range(grid.width)
+            for y in range(grid.height)
+            if grid.reachable_cell((x, y), boss_radius)
+        }
+        self.assertTrue(small_reachable <= boss_reachable)
         self.assertTrue(grid.all_spawns_reachable())
 
     def test_starting_area_is_flat_for_core_and_initial_setup(self):
@@ -209,18 +252,23 @@ class TerrainGenerationTests(unittest.TestCase):
     def test_elevation_changes_require_south_facing_stairs(self):
         elevations = [[0 for _ in range(5)] for _ in range(5)]
         elevations[2][2] = 1
+        elevations[3][2] = 1
 
         no_stairs = TerrainMap.from_elevations(elevations)
         self.assertFalse(no_stairs.can_traverse((2, 3), (2, 2)))
         self.assertFalse(no_stairs.can_traverse((2, 2), (2, 3)))
 
         with_stairs = TerrainMap.from_elevations(elevations, {(2, 3): STAIR_SOUTH})
+        self.assert_south_stair_pair(with_stairs, (2, 3))
         self.assertTrue(with_stairs.can_traverse((2, 3), (2, 2)))
         self.assertTrue(with_stairs.can_traverse((2, 2), (2, 3)))
+        self.assertTrue(with_stairs.can_traverse((3, 3), (3, 2)))
+        self.assertTrue(with_stairs.can_traverse((3, 2), (3, 3)))
 
     def test_grid_flow_respects_stair_transitions(self):
         elevations = [[0 for _ in range(7)] for _ in range(7)]
         elevations[3][3] = 1
+        elevations[4][3] = 1
 
         blocked = GameGrid(7, 7, config.TILE_SIZE, terrain=TerrainMap.from_elevations(elevations))
         self.assertIsNone(blocked.distance_at((3, 6)))
@@ -400,6 +448,7 @@ class TerrainShadowTests(unittest.TestCase):
     def test_shadow_calculation_does_not_change_navigation_or_buildability(self):
         elevations = [[0 for _ in range(5)] for _ in range(5)]
         elevations[2][2] = 1
+        elevations[3][2] = 1
         terrain = TerrainMap.from_elevations(elevations, {(2, 3): STAIR_SOUTH})
         grid = GameGrid(5, 5, config.TILE_SIZE, terrain=terrain)
         before = (
