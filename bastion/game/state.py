@@ -29,6 +29,7 @@ from bastion.game.ambient_mobs import AmbientMobManager
 from bastion.game.entities import Beam, DamagePulse, Enemy, FloatingText, Particle, Tower
 from bastion.game.enemy_defs import enemy_collision_radius
 from bastion.game.fog import FogOfWar, VisionProfile, VisionSource
+from bastion.game.footprints import ONE_BY_ONE, StructureFootprint, footprint_for_mode, footprint_for_structure
 from bastion.game.grid import GameGrid
 from bastion.game.items import ActiveItemBuff, DroppedItem, ITEM_DEFINITIONS, Inventory, apply_item, random_drop_item_id, random_scroll_id
 from bastion.game.research import ResearchManager
@@ -870,16 +871,32 @@ class GameState:
                 return True
         return False
 
-    def can_build_on(self, cell: tuple[int, int]) -> bool:
-        return self.grid.buildable(cell) and self.is_cell_explored(cell) and not self.is_core_reserve(cell) and self.active_resource_at(cell) is None
+    def can_build_on(self, cell: tuple[int, int], footprint: StructureFootprint = ONE_BY_ONE) -> bool:
+        cells = self.grid.footprint_cells(cell, footprint)
+        return (
+            self.grid.buildable_footprint(cell, footprint)
+            and all(self.is_cell_explored(occupied) for occupied in cells)
+            and not any(self.is_core_reserve(occupied) for occupied in cells)
+            and not any(self.active_resource_at(occupied) is not None for occupied in cells)
+        )
 
     def can_build_extractor_on(self, cell: tuple[int, int]) -> bool:
         deposit = self.resource_for_extractor_cell(cell)
         if deposit is None:
             return False
         cell = deposit.cell
-        if not self.grid.buildable(cell) or not self.is_world_explored(deposit.pos, deposit.radius) or self.is_core_reserve(cell):
+        footprint = footprint_for_mode("extractor")
+        cells = self.grid.footprint_cells(cell, footprint)
+        if (
+            not self.grid.buildable_footprint(cell, footprint)
+            or not self.is_world_explored(deposit.pos, deposit.radius)
+            or any(self.is_core_reserve(occupied) for occupied in cells)
+        ):
             return False
+        for occupied in cells:
+            resource = self.active_resource_at(occupied)
+            if resource is not None and resource is not deposit:
+                return False
         claim = getattr(deposit, "claimed_by", None)
         return claim is None or not getattr(claim, "alive", False)
 
@@ -996,7 +1013,7 @@ class GameState:
         deposits.sort(key=lambda deposit: deposit.pos.distance_to(self.core_target.pos))
         for deposit in deposits:
             cell = deposit.cell
-            if not self.grid.buildable(cell) or self.is_core_reserve(cell):
+            if not self.can_build_extractor_on(cell):
                 continue
             core, path, _reason = self.arcane_source_for_cell(cell)
             if core is None or not path:
@@ -1048,7 +1065,7 @@ class GameState:
                     if max(abs(dx), abs(dy)) != radius:
                         continue
                     cell = (cx + dx, cy + dy)
-                    if not self.can_build_on(cell):
+                    if not self.can_build_on(cell, footprint_for_mode("house")):
                         continue
                     core, path, _reason = self.arcane_source_for_cell(cell)
                     if core is not None and path:
@@ -1678,6 +1695,7 @@ class GameState:
         mode = self.build_mode
         if mode is None or self.round_events.awaiting_choice:
             return
+        footprint = footprint_for_mode(mode)
         cost = BUILD_COSTS[mode]
         if self.gold < cost:
             self.message("NO GOLD")
@@ -1688,7 +1706,7 @@ class GameState:
             return
 
         if mode == "core":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core = CoreTarget(self, cell, len(self.core_targets) + 1)
@@ -1707,7 +1725,7 @@ class GameState:
             return
 
         if mode == "wall":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             ok, reason = self.grid.try_add_wall(cell)
@@ -1732,7 +1750,7 @@ class GameState:
             return
 
         if mode in TOWER_BLUEPRINTS:
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1765,7 +1783,7 @@ class GameState:
             self.tutorial.notify_tower_created(tower)
 
         if mode == "barracks":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1786,7 +1804,7 @@ class GameState:
             self.tutorial.notify_building_created(barracks)
 
         if mode == "house":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1836,7 +1854,7 @@ class GameState:
             self.tutorial.notify_building_created(extractor)
 
         if mode == "torch":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1857,7 +1875,7 @@ class GameState:
             self.tutorial.notify_building_created(torch)
 
         if mode == "training_grounds":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1878,7 +1896,7 @@ class GameState:
             self.tutorial.notify_building_created(training_grounds)
 
         if mode == "expedition_campsite":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1901,7 +1919,7 @@ class GameState:
             self.tutorial.notify_building_created(campsite)
 
         if mode == "hero_hall":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1924,7 +1942,7 @@ class GameState:
             self.tutorial.notify_building_created(hero_hall)
 
         if mode == "research":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1945,7 +1963,7 @@ class GameState:
             self.tutorial.notify_building_created(research)
 
         if mode == "library":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -1966,7 +1984,7 @@ class GameState:
             self.tutorial.notify_building_created(library)
 
         if mode == "shield_generator":
-            if not self.can_build_on(cell):
+            if not self.can_build_on(cell, footprint):
                 self.message("BLOCKED")
                 return
             core, path, reason = self.arcane_source_for_cell(cell)
@@ -2517,6 +2535,14 @@ class GameState:
                 stack.append(neighbor)
         return visited
 
+    def connected_structure_count(self, cells: set[tuple[int, int]]) -> int:
+        structures = {
+            id(structure)
+            for cell in cells
+            if (structure := self.grid.towers.get(cell)) is not None and getattr(structure, "alive", False)
+        }
+        return max(1, len(structures))
+
     def shield_for_target(self, target):
         cell = getattr(target, "cell", None)
         if cell is None:
@@ -2524,10 +2550,11 @@ class GameState:
         best = None
         best_size = -1
         for generator in self.shield_generators():
-            generator.set_network(self.connected_structure_cells(generator.cell))
+            network = self.connected_structure_cells(generator.cell)
+            generator.set_network(network, self.connected_structure_count(network))
             if cell not in generator.network_cells:
                 continue
-            size = len(generator.network_cells)
+            size = generator.network_structure_count
             if size > best_size:
                 best = generator
                 best_size = size
@@ -2811,7 +2838,8 @@ class GameState:
                 render_jobs.append((*self._render_sort_key(zone.pos, 20), lambda zone=zone: zone.draw(surface, camera, viewport)))
 
         for building in self.buildings:
-            if not self._world_circle_in_bounds(building.pos, BUILDING_SPRITE_WORLD_SIZE, world_bounds):
+            world_size = self._structure_sprite_world_size(building)
+            if not self._world_circle_in_bounds(building.pos, world_size, world_bounds):
                 continue
             selected = (
                 building is self.selected_barracks
@@ -2834,11 +2862,12 @@ class GameState:
                     viewport,
                     building,
                     lambda: self._draw_building_structure(surface, camera, viewport, fonts["tiny"], building, selected, hovered),
-                    world_size=BUILDING_SPRITE_WORLD_SIZE,
+                    world_size=world_size,
                 ),
             ))
         for tower in self.towers:
-            if not self._world_circle_in_bounds(tower.pos, BUILDING_SPRITE_WORLD_SIZE, world_bounds):
+            world_size = self._structure_sprite_world_size(tower)
+            if not self._world_circle_in_bounds(tower.pos, world_size, world_bounds):
                 continue
             hovered = hover_kind == "structure" and hover_value == id(tower)
             render_jobs.append((
@@ -2849,7 +2878,7 @@ class GameState:
                     viewport,
                     tower,
                     lambda: tower.draw(surface, camera, viewport, tower is self.selected_tower, hovered),
-                    world_size=BUILDING_SPRITE_WORLD_SIZE,
+                    world_size=world_size,
                 ),
             ))
         for troop in self.troops:
@@ -3076,7 +3105,15 @@ class GameState:
         kind = getattr(structure, "kind", "")
         if kind in {"core", "enemy_core"}:
             return CORE_SPRITE_WORLD_SIZE
-        return max(BUILDING_SPRITE_WORLD_SIZE, float(getattr(structure, "radius", self.grid.tile_size * 0.5)) * 1.85)
+        return self._structure_sprite_world_size(structure)
+
+    def _structure_sprite_world_size(self, structure) -> float:
+        kind = getattr(structure, "kind", "")
+        if kind in {"core", "enemy_core"}:
+            return CORE_SPRITE_WORLD_SIZE
+        footprint = footprint_for_structure(structure)
+        footprint_size = max(footprint.width, footprint.height) * self.grid.tile_size
+        return max(BUILDING_SPRITE_WORLD_SIZE, float(footprint_size))
 
     def _draw_terrain(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         terrain_renderer = getattr(self, "_terrain_renderer", None)
@@ -3182,6 +3219,7 @@ class GameState:
     ) -> None:
         center = camera.world_to_screen(building.pos, viewport)
         scale = hover_feedback.hover_scale(hovered)
+        world_size = self._structure_sprite_world_size(building)
 
         if isinstance(building, Torch):
             draw_circle_alpha(
@@ -3198,7 +3236,7 @@ class GameState:
                 viewport,
                 building,
                 "torch",
-                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                world_size=world_size,
                 scale=scale,
                 bounce=True,
                 pulse=True,
@@ -3210,7 +3248,7 @@ class GameState:
                 viewport,
                 building,
                 "shield_generator",
-                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                world_size=world_size,
                 scale=scale,
                 bounce=True,
                 pulse=building.shield_active or building.recharging,
@@ -3218,7 +3256,7 @@ class GameState:
             if building.shield_active or building.recharging:
                 phase = pygame.time.get_ticks() * 0.005 + building.pulse
                 alpha = 34 if building.shield_active else 18
-                draw_circle_alpha(surface, center, BUILDING_SPRITE_WORLD_SIZE * camera.zoom * (0.52 + 0.04 * math.sin(phase * 2.0)), config.PALETTE.white, alpha, 1)
+                draw_circle_alpha(surface, center, world_size * camera.zoom * (0.52 + 0.04 * math.sin(phase * 2.0)), config.PALETTE.white, alpha, 1)
         else:
             if isinstance(building, TrainingGrounds):
                 draw_circle_alpha(
@@ -3239,7 +3277,7 @@ class GameState:
                 building,
                 building.kind,
                 variant=variant,
-                world_size=BUILDING_SPRITE_WORLD_SIZE,
+                world_size=world_size,
                 scale=scale,
             )
 
@@ -3382,7 +3420,8 @@ class GameState:
 
     def _draw_shield_networks(self, surface: pygame.Surface, camera, viewport: pygame.Rect) -> None:
         for generator in self.shield_generators():
-            generator.set_network(self.connected_structure_cells(generator.cell))
+            network = self.connected_structure_cells(generator.cell)
+            generator.set_network(network, self.connected_structure_count(network))
             if generator.shield <= 0 and not generator.recharging:
                 continue
             alpha = 32 if generator.shield_active else 18
@@ -3561,6 +3600,7 @@ class GameState:
         if not self.build_mode:
             return
         mode = self.build_mode
+        footprint = footprint_for_mode(mode)
         world = camera.screen_to_world(mouse_pos, viewport)
         cell = self.grid.cell_from_world(world)
         preview_cell = cell
@@ -3568,14 +3608,14 @@ class GameState:
             deposit = self.resource_for_extractor_cell(cell)
             if deposit is not None:
                 preview_cell = deposit.cell
-        rect = self._cell_screen_rect(preview_cell, camera, viewport)
+        rect = self._footprint_screen_rect(preview_cell, footprint, camera, viewport)
         affordable = self.gold >= BUILD_COSTS[mode] and self.minerals >= MINERAL_BUILD_COSTS.get(mode, 0)
-        valid = (self.can_build_extractor_on(preview_cell) if mode == "extractor" else self.can_build_on(preview_cell)) and affordable
+        valid = (self.can_build_extractor_on(preview_cell) if mode == "extractor" else self.can_build_on(preview_cell, footprint)) and affordable
         preview_path: list[tuple[int, int]] = []
         structure_modes = ("barracks", "house", "extractor", "torch", "training_grounds", "expedition_campsite", "hero_hall", "research", "library", "shield_generator")
         if valid and (mode == "wall" or mode == "core" or mode in TOWER_BLUEPRINTS or mode in structure_modes):
             blocker = "wall" if mode == "wall" else "tower"
-            valid = self.grid.would_keep_paths_open(preview_cell, blocker)
+            valid = self.grid.would_keep_paths_open(preview_cell, blocker, footprint)
         if valid and mode != "wall" and mode != "core":
             _core, preview_path, _reason = self.arcane_source_for_cell(preview_cell)
             valid = bool(preview_path)
@@ -3589,16 +3629,16 @@ class GameState:
             self._draw_core_reserve_preview(surface, camera, viewport, preview_cell, valid)
         if mode in TOWER_BLUEPRINTS:
             stats = stats_for(mode, 1)
-            center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
+            center = camera.world_to_screen(self.grid.footprint_center(preview_cell, footprint), viewport)
             draw_circle_alpha(surface, center, float(stats["range"]) * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "torch":
-            center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
+            center = camera.world_to_screen(self.grid.footprint_center(preview_cell, footprint), viewport)
             draw_circle_alpha(surface, center, Torch.aggro_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "training_grounds":
-            center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
+            center = camera.world_to_screen(self.grid.footprint_center(preview_cell, footprint), viewport)
             draw_circle_alpha(surface, center, TrainingGrounds.training_radius * camera.zoom, config.TACTICAL_OVERLAY_COLOR, config.TACTICAL_OVERLAY_PREVIEW_ALPHA, 1)
         if mode == "expedition_campsite":
-            center = camera.world_to_screen(self.grid.world_center(preview_cell), viewport)
+            center = camera.world_to_screen(self.grid.footprint_center(preview_cell, footprint), viewport)
             for index in range(5):
                 angle = -math.pi / 2 + index * math.tau / 5
                 orb = center + pygame.Vector2(math.cos(angle), math.sin(angle)) * 32 * camera.zoom
@@ -3629,6 +3669,27 @@ class GameState:
     def _cell_screen_rect(self, cell: tuple[int, int], camera, viewport: pygame.Rect) -> pygame.Rect:
         top_left = camera.world_to_screen((cell[0] * self.grid.tile_size, cell[1] * self.grid.tile_size), viewport)
         bottom_right = camera.world_to_screen(((cell[0] + 1) * self.grid.tile_size, (cell[1] + 1) * self.grid.tile_size), viewport)
+        left = math.floor(top_left.x)
+        top = math.floor(top_left.y)
+        right = math.ceil(bottom_right.x)
+        bottom = math.ceil(bottom_right.y)
+        return pygame.Rect(left, top, max(1, right - left), max(1, bottom - top))
+
+    def _footprint_screen_rect(
+        self,
+        cell: tuple[int, int],
+        footprint: StructureFootprint,
+        camera,
+        viewport: pygame.Rect,
+    ) -> pygame.Rect:
+        top_left = camera.world_to_screen((cell[0] * self.grid.tile_size, cell[1] * self.grid.tile_size), viewport)
+        bottom_right = camera.world_to_screen(
+            (
+                (cell[0] + footprint.width) * self.grid.tile_size,
+                (cell[1] + footprint.height) * self.grid.tile_size,
+            ),
+            viewport,
+        )
         left = math.floor(top_left.x)
         top = math.floor(top_left.y)
         right = math.ceil(bottom_right.x)

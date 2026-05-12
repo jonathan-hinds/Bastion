@@ -3285,13 +3285,14 @@ class HUD:
     def _draw_shield_context(self, surface: pygame.Surface, x: int, y: int, rect: pygame.Rect, shield, state) -> None:
         self._section(surface, "SHIELD GENERATOR", x, y)
         y += 26
-        shield.set_network(state.connected_structure_cells(shield.cell))
+        network = state.connected_structure_cells(shield.cell)
+        shield.set_network(network, state.connected_structure_count(network))
         status = "ACTIVE" if shield.shield_active else ("RECHARGING" if shield.recharging else "BROKEN")
         entries = [
             ("HP", f"{int(shield.health)}/{int(shield.max_health)}"),
             ("SHIELD", f"{int(shield.shield)}/{int(shield.shield_max)}"),
             ("STATUS", status),
-            ("LINKED", str(len(shield.network_cells))),
+            ("LINKED", str(shield.network_structure_count)),
         ]
         if shield.recharging:
             entries.append(("TIME", f"{shield.recharge_remaining:0.1f}S"))

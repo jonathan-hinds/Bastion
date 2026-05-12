@@ -8,6 +8,7 @@ import random
 import pygame
 
 from bastion import config
+from bastion.game.footprints import ONE_BY_ONE, StructureFootprint, footprint_for_structure
 from bastion.game.terrain import STAIR_SOUTH, ProceduralTerrainGenerator, TerrainMap
 
 
@@ -112,13 +113,27 @@ class GameGrid:
             and cell not in self.towers
         )
 
+    def buildable_footprint(self, anchor: tuple[int, int], footprint: StructureFootprint = ONE_BY_ONE) -> bool:
+        return all(self.buildable(cell) for cell in self.footprint_cells(anchor, footprint))
+
     def world_center(self, cell: tuple[int, int]) -> pygame.Vector2:
         x, y = cell
         return pygame.Vector2((x + 0.5) * self.tile_size, (y + 0.5) * self.tile_size)
 
+    def footprint_center(self, anchor: tuple[int, int], footprint: StructureFootprint = ONE_BY_ONE) -> pygame.Vector2:
+        x, y = anchor
+        return pygame.Vector2((x + footprint.width * 0.5) * self.tile_size, (y + footprint.height * 0.5) * self.tile_size)
+
     def cell_rect(self, cell: tuple[int, int]) -> pygame.Rect:
         x, y = cell
         return pygame.Rect(x * self.tile_size, y * self.tile_size, self.tile_size, self.tile_size)
+
+    def footprint_rect(self, anchor: tuple[int, int], footprint: StructureFootprint = ONE_BY_ONE) -> pygame.Rect:
+        x, y = anchor
+        return pygame.Rect(x * self.tile_size, y * self.tile_size, footprint.width * self.tile_size, footprint.height * self.tile_size)
+
+    def footprint_cells(self, anchor: tuple[int, int], footprint: StructureFootprint = ONE_BY_ONE) -> tuple[tuple[int, int], ...]:
+        return footprint.cells(anchor)
 
     def cell_from_world(self, world: pygame.Vector2 | tuple[float, float]) -> tuple[int, int]:
         point = pygame.Vector2(world)
@@ -173,24 +188,36 @@ class GameGrid:
         self.recompute_flow()
 
     def try_add_tower(self, cell: tuple[int, int], tower: object) -> tuple[bool, str]:
-        if not self.buildable(cell):
+        footprint = footprint_for_structure(tower)
+        occupied_cells = self.footprint_cells(cell, footprint)
+        if not all(self.buildable(occupied) for occupied in occupied_cells):
             return False, "Blocked"
-        self.towers[cell] = tower
+        for occupied in occupied_cells:
+            self.towers[occupied] = tower
         self.recompute_flow()
         if not self.all_spawns_reachable():
-            self.towers.pop(cell, None)
+            self._remove_tower_instance(tower)
             self.recompute_flow()
             return False, "Path sealed"
         return True, ""
 
     def remove_tower(self, cell: tuple[int, int]) -> None:
-        self.towers.pop(cell, None)
+        tower = self.towers.get(cell)
+        if tower is None:
+            self.towers.pop(cell, None)
+        else:
+            self._remove_tower_instance(tower)
         self.recompute_flow()
 
-    def would_keep_paths_open(self, cell: tuple[int, int], blocker: str) -> bool:
-        if not self.buildable(cell):
+    def would_keep_paths_open(
+        self,
+        cell: tuple[int, int],
+        blocker: str,
+        footprint: StructureFootprint = ONE_BY_ONE,
+    ) -> bool:
+        if not self.buildable_footprint(cell, footprint):
             return False
-        return self._all_spawns_reachable_with_candidate(cell)
+        return self._all_spawns_reachable_with_candidate(set(self.footprint_cells(cell, footprint)))
 
     def distance_at(self, cell: tuple[int, int]) -> int | None:
         if not self.in_bounds(cell):
@@ -790,19 +817,24 @@ class GameGrid:
             return False
         return candidate in self.terrain.linked_diagonal_neighbors(cell) or self.terrain.can_traverse(cell, candidate)
 
-    def _all_spawns_reachable_with_candidate(self, blocked_cell: tuple[int, int]) -> bool:
-        if blocked_cell == self.townhall_cell:
+    def _all_spawns_reachable_with_candidate(self, blocked_cells: set[tuple[int, int]]) -> bool:
+        if self.townhall_cell in blocked_cells:
             return False
         queue: deque[tuple[int, int]] = deque([self.townhall_cell])
         visited = {self.townhall_cell}
         while queue:
             cell = queue.popleft()
-            for neighbor in self._cardinal_navigation_neighbors(cell, blocked_cell=blocked_cell):
+            for neighbor in self._cardinal_navigation_neighbors(cell, blocked_cells=blocked_cells):
                 if neighbor in visited:
                     continue
                 visited.add(neighbor)
                 queue.append(neighbor)
         return all(cell in visited for cell in self.spawn_cells)
+
+    def _remove_tower_instance(self, tower: object) -> None:
+        for cell, occupant in list(self.towers.items()):
+            if occupant is tower:
+                self.towers.pop(cell, None)
 
     def _radius_distances_for_key(self, radius_key: int) -> list[list[int | None]]:
         cached = self._radius_distance_cache.get(radius_key)
@@ -926,11 +958,13 @@ class GameGrid:
         cell: tuple[int, int],
         *,
         blocked_cell: tuple[int, int] | None = None,
+        blocked_cells: set[tuple[int, int]] | None = None,
     ) -> list[tuple[int, int]]:
         x, y = cell
+        candidate_blockers = blocked_cells if blocked_cells is not None else ({blocked_cell} if blocked_cell is not None else set())
         neighbors: list[tuple[int, int]] = []
         for candidate in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-            if candidate == blocked_cell:
+            if candidate in candidate_blockers:
                 continue
             if not self._can_move_between(cell, candidate):
                 continue

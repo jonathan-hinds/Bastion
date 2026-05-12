@@ -485,7 +485,7 @@ class BastionApp:
         cell = self.state.grid.cell_from_world(world)
         structure = self.state.grid.towers.get(cell)
         if getattr(structure, "alive", False) and getattr(structure, "target_class", "") != "core":
-            if getattr(structure, "kind", "") in {"archer", "cannon", "wizard", "barracks", "house", "extractor", "torch", "training_grounds", "expedition_campsite", "research", "library", "shield_generator"}:
+            if getattr(structure, "kind", "") in {"archer", "cannon", "wizard", "barracks", "house", "extractor", "torch", "training_grounds", "expedition_campsite", "hero_hall", "research", "library", "shield_generator"}:
                 return ("structure", id(structure))
         if cell in self.state.grid.walls:
             return ("wall", cell)

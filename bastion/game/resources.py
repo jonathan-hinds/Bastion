@@ -9,6 +9,7 @@ import pygame
 from bastion import config
 from bastion.engine.drawing import draw_circle_alpha, draw_line_alpha
 from bastion.engine import hover_feedback
+from bastion.game.footprints import TWO_BY_TWO
 
 
 @dataclass
@@ -397,12 +398,13 @@ class MineralExtractor:
     kind = "extractor"
     display_name = "Extractor"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.53
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 175.0
 
     def __init__(self, cell: tuple[int, int], grid, deposit: MineralDeposit) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.deposit = deposit
         self.health = self.max_health
         self.alive = True
@@ -426,7 +428,7 @@ class MineralExtractor:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        tile = config.TILE_SIZE * camera.zoom * hover_feedback.hover_scale(hovered)
+        tile = config.TILE_SIZE * max(self.footprint.size) * camera.zoom * hover_feedback.hover_scale(hovered)
         size = int(tile * 0.88)
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center

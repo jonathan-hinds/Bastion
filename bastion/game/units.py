@@ -28,6 +28,7 @@ from bastion.game.combat_stats import (
     melee_damage_from_strength,
 )
 from bastion.game.entities import FloatingText
+from bastion.game.footprints import ONE_BY_ONE, TWO_BY_TWO
 from bastion.game.hero_trees import HERO_ORB_LEVEL_INTERVAL, node_for_troop, tree_for_troop, troop_has_tree
 from bastion.game.items import ActiveItemBuff, ITEM_DEFINITIONS, Inventory, InventorySlot
 from bastion.game.navigation import PathNavigator
@@ -272,13 +273,14 @@ class Barracks:
     kind = "barracks"
     display_name = "Barracks"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.52
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 260.0
     queue_limit = 5
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.train_queue: list[TrainingOrder] = []
@@ -313,7 +315,7 @@ class Barracks:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.94 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.94 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -349,13 +351,14 @@ class House:
     kind = "house"
     display_name = "House"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.50
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 165.0
     capacity = HOUSE_CAPACITY
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.pulse = random.random() * math.tau
@@ -371,7 +374,7 @@ class House:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.90 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.90 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -403,6 +406,7 @@ class Torch:
     kind = "torch"
     display_name = "Torch"
     target_class = "structure"
+    footprint = ONE_BY_ONE
     radius = config.TILE_SIZE * 0.48
     max_health = 420.0
     aggro_radius = 300.0
@@ -471,7 +475,8 @@ class TrainingGrounds:
     kind = "training_grounds"
     display_name = "Training Grounds"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.54
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 240.0
     training_radius = 185.0
     max_trainees = 5
@@ -480,7 +485,7 @@ class TrainingGrounds:
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.pulse = random.random() * math.tau
@@ -516,7 +521,7 @@ class TrainingGrounds:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.94 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.94 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -552,12 +557,13 @@ class ExpeditionCampsite:
     kind = "expedition_campsite"
     display_name = "Expedition Campsite"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.55
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 225.0
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.pulse = random.random() * math.tau
@@ -573,7 +579,7 @@ class ExpeditionCampsite:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -615,12 +621,13 @@ class HeroHall:
     kind = "hero_hall"
     display_name = "Hero Hall"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.55
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 260.0
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.pulse = random.random() * math.tau
@@ -636,7 +643,7 @@ class HeroHall:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.96 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -668,12 +675,13 @@ class ResearchBuilding:
     kind = "research"
     display_name = "Research"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.51
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 210.0
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.active_order: ResearchOrder | None = None
@@ -733,7 +741,7 @@ class ResearchBuilding:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.92 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.92 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -770,13 +778,14 @@ class Library:
     kind = "library"
     display_name = "Library"
     target_class = "structure"
-    radius = config.TILE_SIZE * 0.51
+    footprint = TWO_BY_TWO
+    radius = config.TILE_SIZE
     max_health = 195.0
     scroll_gold_cost = 30
 
     def __init__(self, cell: tuple[int, int], grid) -> None:
         self.cell = cell
-        self.pos = grid.world_center(cell)
+        self.pos = grid.footprint_center(cell, self.footprint)
         self.health = self.max_health
         self.alive = True
         self.active_order: ScrollOrder | None = None
@@ -835,7 +844,7 @@ class Library:
 
     def draw(self, surface: pygame.Surface, camera, viewport: pygame.Rect, font: pygame.font.Font, selected: bool = False, hovered: bool = False) -> None:
         center = camera.world_to_screen(self.pos, viewport)
-        size = int(config.TILE_SIZE * camera.zoom * 0.92 * hover_feedback.hover_scale(hovered))
+        size = int(config.TILE_SIZE * max(self.footprint.size) * camera.zoom * 0.92 * hover_feedback.hover_scale(hovered))
         rect = pygame.Rect(0, 0, size, size)
         rect.center = center
         fill, mark = hover_feedback.inverted_pair(hovered)
@@ -881,6 +890,7 @@ class ShieldGenerator:
     kind = "shield_generator"
     display_name = "Shield Generator"
     target_class = "structure"
+    footprint = ONE_BY_ONE
     radius = config.TILE_SIZE * 0.54
     max_health = 185.0
     shield_per_structure = 56.0
@@ -900,15 +910,17 @@ class ShieldGenerator:
         self.recharge_total = self.recharge_duration
         self.recharging = False
         self.network_cells: set[tuple[int, int]] = {cell}
+        self.network_structure_count = 1
 
     @property
     def shield_active(self) -> bool:
         return self.alive and not self.recharging and self.shield > 0
 
-    def set_network(self, cells: set[tuple[int, int]]) -> None:
+    def set_network(self, cells: set[tuple[int, int]], structure_count: int | None = None) -> None:
         self.network_cells = set(cells) if cells else {self.cell}
+        self.network_structure_count = max(1, int(structure_count if structure_count is not None else len(self.network_cells)))
         previous_max = max(1.0, self.shield_max)
-        self.shield_max = self.base_shield + max(1, len(self.network_cells)) * self.shield_per_structure
+        self.shield_max = self.base_shield + self.network_structure_count * self.shield_per_structure
         if not self.recharging:
             ratio = min(1.0, self.shield / previous_max)
             self.shield = min(self.shield_max, max(self.shield, self.shield_max * ratio))
@@ -948,7 +960,8 @@ class ShieldGenerator:
     def update(self, dt: float, game) -> None:
         if not self.alive:
             return
-        self.set_network(game.connected_structure_cells(self.cell))
+        network = game.connected_structure_cells(self.cell)
+        self.set_network(network, game.connected_structure_count(network))
         if not self.recharging:
             return
         self.recharge_remaining = max(0.0, self.recharge_remaining - dt)
