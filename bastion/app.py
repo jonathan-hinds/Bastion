@@ -14,6 +14,7 @@ from bastion.engine.drawing import draw_rect_alpha
 from bastion.engine import hover_feedback
 from bastion.engine.camera import Camera
 from bastion.engine.sprites import preload_sprite_assets
+from bastion.game.settings import GameSettings
 from bastion.game.state import GameState
 from bastion.ui.hud import HUD
 from bastion.ui.pause_menu import PauseMenu
@@ -31,7 +32,8 @@ class BastionApp:
         self.audio = AudioSystem()
         self.audio.play_music()
         preload_sprite_assets()
-        self.state = GameState()
+        self.settings = GameSettings.load()
+        self.state = GameState(tutorial_enabled=self.settings.gameplay.tutorial_enabled)
         self.state.audio = self.audio
         self.camera = Camera(self.state.grid.world_size)
         self.fonts = {
@@ -131,18 +133,21 @@ class BastionApp:
                 self.window = self.get_sdl_window()
                 self.hud.set_parent_window(self.get_native_window_id())
                 self.camera.clamp_to_world(self.viewport)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.handle_keydown(event)
+                continue
+            elif self.pause_menu.open:
+                result = self.pause_menu.handle_event(event, self.screen_rect, self.state, self.audio, self.settings)
+                if result == "quit":
+                    self.running = False
+                    self.hud.close_all_windows()
+                continue
             elif self.state.tutorial.handle_event(event, self.screen_rect, viewport):
                 continue
             elif self.state.tutorial.blocks_player_input and event.type in (pygame.KEYDOWN, pygame.KEYUP, pygame.MOUSEWHEEL):
                 continue
             elif event.type == pygame.KEYDOWN:
                 self.handle_keydown(event)
-            elif self.pause_menu.open:
-                result = self.pause_menu.handle_event(event, self.screen_rect, self.state, self.audio)
-                if result == "quit":
-                    self.running = False
-                    self.hud.close_all_windows()
-                continue
             elif event.type == pygame.MOUSEWHEEL:
                 if self.hud.handle_event(event, self.state, self.screen_rect, viewport, self.camera):
                     continue
@@ -301,7 +306,7 @@ class BastionApp:
             self.pause_menu.toggle(self.state, self.audio)
             self.state.play_sound("menu_select")
         elif self.pause_menu.open:
-            result = self.pause_menu.handle_event(event, self.screen_rect, self.state, self.audio)
+            result = self.pause_menu.handle_event(event, self.screen_rect, self.state, self.audio, self.settings)
             if result == "quit":
                 self.running = False
                 self.hud.close_all_windows()
@@ -326,6 +331,7 @@ class BastionApp:
             if self.hud._living_research_labs(self.state):
                 self.toggle_hud_panel("research")
         elif event.key == pygame.K_r and self.state.game_over:
+            self.state.set_tutorial_enabled(self.settings.gameplay.tutorial_enabled)
             self.state.reset()
             self.state.audio = self.audio
             self.audio.play_music()
@@ -446,7 +452,7 @@ class BastionApp:
         viewport = self.viewport
         self.hud.layout_buttons(self.screen_rect, viewport, self.state)
         pos = pygame.mouse.get_pos()
-        target = self.pause_menu.hover_target_at(pos, self.screen_rect)
+        target = self.pause_menu.hover_target_at(pos, self.screen_rect, self.settings)
         if self.pause_menu.open:
             pass
         elif target is None:
@@ -502,7 +508,7 @@ class BastionApp:
             self.draw_selection_box(viewport)
         self.hud.draw(self.screen, self.screen_rect, viewport, self.state, self.camera)
         self.state.tutorial.draw_overlay(self.screen, self.screen_rect, viewport, self.fonts)
-        self.pause_menu.draw(self.screen, self.screen_rect, self.audio)
+        self.pause_menu.draw(self.screen, self.screen_rect, self.audio, self.settings)
         pygame.display.flip()
 
     def draw_selection_box(self, viewport: pygame.Rect) -> None:

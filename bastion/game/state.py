@@ -138,6 +138,14 @@ class GameState:
         self.tutorial_played_this_launch = False
         self.reset()
 
+    def set_tutorial_enabled(self, enabled: bool) -> None:
+        was_enabled = self.tutorial_enabled
+        self.tutorial_enabled = bool(enabled)
+        if not self.tutorial_enabled and getattr(self, "tutorial", None) is not None and self.tutorial.active:
+            self.tutorial.complete(aborted=True)
+        elif self.tutorial_enabled and not was_enabled:
+            self.tutorial_played_this_launch = False
+
     def reset(self) -> None:
         self.grid = GameGrid()
         self.terrain_shadows = TerrainShadowCalculator()

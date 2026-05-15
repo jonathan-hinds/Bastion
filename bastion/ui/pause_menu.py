@@ -17,6 +17,13 @@ class Slider:
     key: str
 
 
+@dataclass
+class ToggleControl:
+    rect: pygame.Rect
+    tab_id: str
+    setting_id: str
+
+
 class PauseMenu:
     def __init__(self, fonts: dict[str, pygame.font.Font]) -> None:
         self.fonts = fonts
@@ -26,6 +33,7 @@ class PauseMenu:
         self.buttons: list[Button] = []
         self.player_buttons: list[Button] = []
         self.sliders: list[Slider] = []
+        self.setting_toggles: list[ToggleControl] = []
         self.dragging_slider: str | None = None
         self.visual_energy = 0.0
         self.visual_impact = 0.0
@@ -53,10 +61,10 @@ class PauseMenu:
         else:
             self.show(state, audio)
 
-    def handle_event(self, event: pygame.event.Event, screen_rect: pygame.Rect, state, audio):
+    def handle_event(self, event: pygame.event.Event, screen_rect: pygame.Rect, state, audio, settings=None):
         if not self.open:
             return None
-        self.layout(screen_rect)
+        self.layout(screen_rect, settings)
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
@@ -71,8 +79,11 @@ class PauseMenu:
                 audio.play("menu_select")
                 return True
             if event.key in (pygame.K_SPACE, pygame.K_p):
-                audio.toggle_music_pause()
-                audio.play("menu_select")
+                if self.view == "settings":
+                    self._toggle_first_visible_setting(state, audio, settings)
+                else:
+                    audio.toggle_music_pause()
+                    audio.play("menu_select")
                 return True
             return True
 
@@ -90,6 +101,12 @@ class PauseMenu:
                 if slider.rect.inflate(0, 24).collidepoint(pos):
                     self.dragging_slider = slider.key
                     self._set_slider_from_pos(slider.key, pos[0], audio)
+                    audio.play("menu_select")
+                    return True
+
+            for toggle in self.setting_toggles:
+                if toggle.rect.collidepoint(pos):
+                    self._toggle_setting(toggle.tab_id, toggle.setting_id, state, settings)
                     audio.play("menu_select")
                     return True
 
@@ -113,6 +130,12 @@ class PauseMenu:
             return "resume"
         if command == "audio":
             self.view = "audio"
+            return True
+        if command == "settings":
+            self.view = "settings"
+            return True
+        if command.startswith("settings_tab:"):
+            self.view = "settings"
             return True
         if command == "back":
             self.view = "main"
@@ -142,7 +165,23 @@ class PauseMenu:
         elif key == "sfx":
             audio.set_sfx_volume(value)
 
-    def layout(self, screen_rect: pygame.Rect) -> None:
+    def _toggle_first_visible_setting(self, state, audio, settings) -> None:
+        if not self.setting_toggles:
+            return
+        toggle = self.setting_toggles[0]
+        self._toggle_setting(toggle.tab_id, toggle.setting_id, state, settings)
+        audio.play("menu_select")
+
+    def _toggle_setting(self, tab_id: str, setting_id: str, state, settings) -> None:
+        if settings is None:
+            return
+        value = settings.toggle_bool(tab_id, setting_id)
+        if tab_id == "gameplay" and setting_id == "tutorial_enabled":
+            state.set_tutorial_enabled(value)
+            state.message("TUTORIAL ENABLED" if value else "TUTORIAL DISABLED")
+        settings.save()
+
+    def layout(self, screen_rect: pygame.Rect, settings=None) -> None:
         panel = self.panel_rect(screen_rect)
         left_x = panel.left + 32
         menu_y = panel.top + 206
@@ -150,7 +189,7 @@ class PauseMenu:
         button_h = 38
         self.buttons = []
         if self.view == "main":
-            entries = (("RESUME", "resume"), ("AUDIO", "audio"), ("CLOSE GAME", "quit"))
+            entries = (("RESUME", "resume"), ("SETTINGS", "settings"), ("AUDIO", "audio"), ("CLOSE GAME", "quit"))
             for index, (label, command) in enumerate(entries):
                 rect = pygame.Rect(left_x, menu_y + index * 50, button_w, button_h)
                 self.buttons.append(Button(rect, label, command))
@@ -170,12 +209,30 @@ class PauseMenu:
             self.player_buttons.append(Button(pygame.Rect(cx - size // 2, center_y - size // 2, size, size), label, command))
 
         self.sliders = []
+        self.setting_toggles = []
         if self.view == "audio":
             sx = left_x
             sy = panel.top + 188
             width = 214
             for index, (label, key) in enumerate((("MASTER", "master"), ("MUSIC", "music"), ("SFX", "sfx"))):
                 self.sliders.append(Slider(pygame.Rect(sx, sy + index * 76, width, 4), label, key))
+        elif self.view == "settings":
+            tab = None
+            if settings is not None:
+                tab = next((item for item in settings.definition.tabs if item.tab_id == "gameplay"), None)
+            setting_ids = (
+                tuple(setting.setting_id for setting in tab.settings if setting.value_type == "bool")
+                if tab is not None
+                else ("tutorial_enabled",)
+            )
+            for index, setting_id in enumerate(setting_ids):
+                self.setting_toggles.append(
+                    ToggleControl(
+                        pygame.Rect(panel.left + 300, panel.top + 174 + index * 74, player.width - 72, 62),
+                        "gameplay",
+                        setting_id,
+                    )
+                )
 
     def panel_rect(self, screen_rect: pygame.Rect) -> pygame.Rect:
         width = min(920, screen_rect.width - 64)
@@ -192,13 +249,16 @@ class PauseMenu:
         width = panel.right - left - margin
         return pygame.Rect(left, panel.top + 78, max(360, width), panel.height - 132)
 
-    def hover_target_at(self, pos: tuple[int, int], screen_rect: pygame.Rect):
+    def hover_target_at(self, pos: tuple[int, int], screen_rect: pygame.Rect, settings=None):
         if not self.open:
             return None
-        self.layout(screen_rect)
+        self.layout(screen_rect, settings)
         for slider in self.sliders:
             if slider.rect.inflate(0, 24).collidepoint(pos):
                 return ("pause_slider", slider.key)
+        for toggle in self.setting_toggles:
+            if toggle.rect.collidepoint(pos):
+                return ("pause_setting", f"{toggle.tab_id}:{toggle.setting_id}")
         for button in self.player_buttons:
             if button.contains(pos):
                 return ("pause_player", button.command)
@@ -207,10 +267,10 @@ class PauseMenu:
                 return ("pause_button", button.command)
         return None
 
-    def draw(self, surface: pygame.Surface, screen_rect: pygame.Rect, audio) -> None:
+    def draw(self, surface: pygame.Surface, screen_rect: pygame.Rect, audio, settings=None) -> None:
         if not self.open:
             return
-        self.layout(screen_rect)
+        self.layout(screen_rect, settings)
         palette = config.PALETTE
         veil = pygame.Surface(screen_rect.size, pygame.SRCALPHA)
         veil.fill((0, 0, 0, 212))
@@ -227,14 +287,16 @@ class PauseMenu:
 
         eyebrow = self.fonts["tiny"].render("BASTION CORE", True, palette.text_dim)
         surface.blit(eyebrow, (panel.left + 32, panel.top + 30))
-        title_text = "PAUSED" if self.view == "main" else "AUDIO"
+        title_text = {"main": "PAUSED", "audio": "AUDIO", "settings": "SETTINGS"}.get(self.view, "PAUSED")
         title = self.fonts["large"].render(title_text, True, palette.white)
         surface.blit(title, (panel.left + 30, panel.top + 46))
 
         if self.view == "main":
             self._draw_session_summary(surface, panel, audio)
-        else:
+        elif self.view == "audio":
             self._draw_audio_settings(surface, panel, audio)
+        elif self.view == "settings":
+            self._draw_gameplay_settings(surface, panel, settings)
 
         for button in self.buttons:
             self._draw_menu_button(surface, button)
@@ -431,6 +493,50 @@ class PauseMenu:
             knob.center = (fill_x, y)
             pygame.draw.rect(surface, mark_color, knob)
             pygame.draw.rect(surface, fill_color, knob, 1)
+
+    def _draw_gameplay_settings(self, surface: pygame.Surface, panel: pygame.Rect, settings) -> None:
+        palette = config.PALETTE
+        x = panel.left + 32
+        tab = self.fonts["small"].render("GAMEPLAY", True, palette.text)
+        surface.blit(tab, (x, panel.top + 122))
+        underline_y = panel.top + 148
+        pygame.draw.line(surface, palette.white, (x, underline_y), (x + tab.get_width(), underline_y), 1)
+
+        if settings is None:
+            return
+        for toggle in self.setting_toggles:
+            definitions = settings.definition.setting(toggle.tab_id, toggle.setting_id)
+            if definitions is None:
+                continue
+            enabled = settings.get_bool(toggle.tab_id, toggle.setting_id)
+            hovered = toggle.rect.collidepoint(pygame.mouse.get_pos())
+            rect = hover_feedback.scaled_rect(toggle.rect, hovered)
+            fill = palette.white if hovered else palette.black
+            border = palette.white if hovered else palette.line_bright
+            text_color = palette.black if hovered else palette.text
+            dim_color = palette.black if hovered else palette.text_dim
+            pygame.draw.rect(surface, fill, rect)
+            pygame.draw.rect(surface, border, rect, 1)
+            pygame.draw.line(surface, dim_color, (rect.left + 1, rect.top + 1), (rect.right - 2, rect.top + 1), 1)
+
+            label = self.fonts["small"].render(definitions.label, True, text_color)
+            surface.blit(label, (rect.left + 18, rect.top + 12))
+            description = self._fit_text(definitions.description.upper(), self.fonts["tiny"], rect.width - 172)
+            desc = self.fonts["tiny"].render(description, True, dim_color)
+            surface.blit(desc, (rect.left + 18, rect.top + 36))
+
+            switch = pygame.Rect(0, 0, 108, 30)
+            switch.right = rect.right - 18
+            switch.centery = rect.centery
+            pygame.draw.rect(surface, palette.black if hovered else palette.panel, switch)
+            pygame.draw.rect(surface, palette.black if hovered else palette.white, switch, 1)
+            active_rect = switch.inflate(-6, -6)
+            half = active_rect.width // 2
+            knob = pygame.Rect(active_rect.left + (half if enabled else 0), active_rect.top, half, active_rect.height)
+            pygame.draw.rect(surface, palette.black if hovered else palette.white, knob)
+            status = definitions.on_label if enabled else definitions.off_label
+            status_text = self.fonts["tiny"].render(status, True, palette.white if hovered else palette.black)
+            surface.blit(status_text, status_text.get_rect(center=knob.center))
 
     def _draw_session_summary(self, surface: pygame.Surface, panel: pygame.Rect, audio) -> None:
         palette = config.PALETTE

@@ -1,0 +1,19 @@
+{
+  "tabs": [
+    {
+      "id": "gameplay",
+      "label": "GAMEPLAY",
+      "settings": [
+        {
+          "id": "tutorial_enabled",
+          "label": "TUTORIAL",
+          "description": "Show tutorial guidance on eligible runs.",
+          "type": "bool",
+          "default": true,
+          "on_label": "ENABLED",
+          "off_label": "DISABLED"
+        }
+      ]
+    }
+  ]
+}
